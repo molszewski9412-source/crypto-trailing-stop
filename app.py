@@ -385,41 +385,45 @@ class CryptoTrailingStopApp:
                 self.render_slot_matrix(slot_idx, slot)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """Renderuj macierz dla pojedynczego slotu"""
-        # Ogranicz do 15 tokenów dla czytelności
-        display_tokens = list(st.session_state.prices.keys())[:15]
-        
-        matrix_data = []
-        for token in display_tokens:
-            if token != slot['token']:
-                current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-                baseline_eq = slot['baseline'].get(token, current_eq)
-                top_eq = slot['top_equivalent'].get(token, current_eq)
-                
-                change_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
-                max_gain = slot['max_gain'].get(token, 0)
-                
-                # Określ status kolorowy
-                if change_top >= -1:
-                    status = "🟢"
-                elif change_top >= -3:
-                    status = "🟡" 
-                else:
-                    status = "🔴"
-                
-                matrix_data.append({
-                    'Token': token,
-                    'Aktualny': current_eq,
-                    'Początkowy': baseline_eq,
-                    'Δ Od początku': change_baseline,
-                    'Top': top_eq,
-                    'Δ Od top': change_top,
-                    'Max Wzrost': max_gain,
-                    'Status': status
-                })
-        
-        df = pd.DataFrame(matrix_data)
+    """Renderuj macierz dla pojedynczego slotu"""
+    # Ogranicz do 15 tokenów dla czytelności
+    display_tokens = list(st.session_state.prices.keys())[:15]
+    
+    matrix_data = []
+    for token in display_tokens:
+        if token != slot['token']:
+            current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
+            baseline_eq = slot['baseline'].get(token, current_eq)
+            top_eq = slot['top_equivalent'].get(token, current_eq)
+            
+            change_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+            change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
+            max_gain = slot['max_gain'].get(token, 0)
+            
+            matrix_data.append({
+                'Token': token,
+                'Aktualny': current_eq,
+                'Początkowy': baseline_eq,
+                'Δ Od początku': change_baseline,
+                'Top': top_eq,
+                'Δ Od top': change_top,
+                'Max Wzrost': max_gain,
+            })
+    
+    df = pd.DataFrame(matrix_data)
+    
+    # ✅ KOLOROWANIE PRZEZ STREAMLIT (bez matplotlib)
+    st.dataframe(
+        df.style.format({
+            'Aktualny': '{:.6f}',
+            'Początkowy': '{:.6f}', 
+            'Top': '{:.6f}',
+            'Δ Od początku': '{:+.2f}%',
+            'Δ Od top': '{:+.2f}%',
+            'Max Wzrost': '{:+.2f}%'
+        }),
+        use_container_width=True
+    )
         
         # Stylowanie tabeli
         styled_df = df.style.format({
