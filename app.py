@@ -36,13 +36,13 @@ class CryptoTrailingStopApp:
         }
         self.data_file = "trailing_stop_data.json"
         
-        # Lista tokenów do śledzenia
+        # ✅ ZAKTUALIZOWANA LISTA TOKENÓW KTÓRE ISTNIEJĄ NA MEXC
         self.tokens_to_track = [
-            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'MATIC',
-            'LTC', 'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'EOS', 'XTZ',
-            'AAVE', 'COMP', 'MKR', 'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX',
-            'TRX', 'VET', 'THETA', 'FTM', 'ONE', 'CELO', 'RSR', 'OCEAN', 'BAND', 'NKN',
-            'STMX', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ', 'CHZ', 'ALICE'
+            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
+            'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
+            'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
+            'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
+            'CHZ', 'ALICE', 'NEAR', 'FTM', 'MATIC', 'ARB', 'OP', 'APT', 'SUI', 'SEI'
         ]
         
     def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
@@ -77,23 +77,47 @@ class CryptoTrailingStopApp:
                             last_update=datetime.now()
                         )
                         found_tokens += 1
+                    else:
+                        # Dla tokenów bez pary USDT, spróbuj z innym sufiksem
+                        alternative_symbols = [f"{token}BTC", f"{token}ETH", f"{token}BNB"]
+                        for alt_symbol in alternative_symbols:
+                            if alt_symbol in usdt_pairs:
+                                data = usdt_pairs[alt_symbol]
+                                # Konwersja przez BTC/ETH/BNB do USDT
+                                btc_price = float(usdt_pairs.get('BTCUSDT', {}).get('bidPrice', 50000))
+                                bid_price = float(data['bidPrice']) * btc_price
+                                ask_price = float(data['askPrice']) * btc_price
+                                
+                                prices[token] = TokenInfo(
+                                    symbol=token,
+                                    bid_price=bid_price,
+                                    ask_price=ask_price,
+                                    last_update=datetime.now()
+                                )
+                                found_tokens += 1
+                                break
                 
                 # Dla brakujących tokenów użyj symulacji
                 missing_tokens = set(self.tokens_to_track) - set(prices.keys())
                 for token in missing_tokens:
-                    base_price = max(10, abs(hash(token)) % 5000)
+                    base_price = max(1, abs(hash(token)) % 100 + 0.1)  # Mniejsze ceny dla brakujących
                     prices[token] = TokenInfo(
                         symbol=token,
                         bid_price=base_price * 0.999,
                         ask_price=base_price * 1.001,
                         last_update=datetime.now()
                     )
+                
+                if missing_tokens:
+                    st.warning(f"⚠️ {len(missing_tokens)} tokenów używa symulacji cen")
                     
             else:
+                st.error(f"❌ Błąd API MEXC: {response.status_code}")
                 # Fallback - wszystkie ceny symulowane
                 prices = self.get_simulated_prices()
                 
         except Exception as e:
+            st.error(f"❌ Błąd połączenia z MEXC: {e}")
             # Fallback - wszystkie ceny symulowane
             prices = self.get_simulated_prices()
         
@@ -103,7 +127,7 @@ class CryptoTrailingStopApp:
         """Fallback - symulowane ceny gdy API nie działa"""
         prices = {}
         for token in self.tokens_to_track:
-            base_price = max(10, abs(hash(token)) % 5000)
+            base_price = max(1, abs(hash(token)) % 100 + 0.1)  # Mniejsze ceny 0.1-100
             prices[token] = TokenInfo(
                 symbol=token,
                 bid_price=base_price * 0.999,
@@ -236,8 +260,8 @@ class CryptoTrailingStopApp:
             'quantity': quantity,
             'baseline': baseline,  # ✅ NIGDY SIĘ NIE ZMIENIA
             'top_equivalent': baseline.copy(),  # Top startuje od baseline
-            'current_gain': {token: 0.0 for token in st.session_state.prices},
-            'max_gain': {token: 0.0 for token in st.session_state.prices},
+            'current_gain': {target_token: 0.0 for target_token in st.session_state.prices},  # ✅ INICJALIZUJ
+            'max_gain': {target_token: 0.0 for target_token in st.session_state.prices},
             'usdt_value': quantity * st.session_state.prices[token].bid_price
         }
         
@@ -249,7 +273,7 @@ class CryptoTrailingStopApp:
         st.success(f"✅ Dodano {quantity:.4f} {token} do portfolio!")
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop i wykonaj transakcje"""
+        """Sprawdź warunki trailing stop i wykonaj transakcje - POPRAWIONE"""
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
             
@@ -270,6 +294,9 @@ class CryptoTrailingStopApp:
                     
                     # Oblicz zmianę od top (dla trailing stop)
                     change_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
+                    
+                    # ✅ ZAPISUJ current_gain ZA KAŻDYM RAZEM!
+                    slot['current_gain'][target_token] = change_from_top
                     
                     # Aktualizuj max gain
                     if change_from_top > slot['max_gain'][target_token]:
@@ -347,6 +374,11 @@ class CryptoTrailingStopApp:
         """Renderuj panel boczny"""
         with st.sidebar:
             st.title("⚙️ Konfiguracja")
+            
+            # Przycisk ręcznej aktualizacji cen
+            if st.button("🔄 Aktualizuj ceny z MEXC", use_container_width=True):
+                self.update_real_prices()
+                st.rerun()
             
             # Dodawanie tokenów do portfolio
             st.subheader("➕ Dodaj Token")
@@ -441,9 +473,9 @@ class CryptoTrailingStopApp:
                 self.render_slot_matrix(slot_idx, slot)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """Renderuj macierz dla pojedynczego slotu"""
-        # Ogranicz do 15 tokenów dla czytelności
-        display_tokens = list(st.session_state.prices.keys())[:15]
+        """Renderuj macierz dla pojedynczego slotu - WSZYSTKIE 50 TOKENÓW"""
+        # ✅ WSZYSTKIE 50 TOKENÓW
+        display_tokens = list(st.session_state.prices.keys())[:50]
         
         matrix_data = []
         for token in display_tokens:
@@ -451,10 +483,11 @@ class CryptoTrailingStopApp:
                 current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
                 baseline_eq = slot['baseline'].get(token, current_eq)
                 top_eq = slot['top_equivalent'].get(token, current_eq)
+                current_gain = slot['current_gain'].get(token, 0)  # ✅ ZAWSZE AKTUALNE
+                max_gain = slot['max_gain'].get(token, 0)
                 
                 change_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
                 change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
-                max_gain = slot['max_gain'].get(token, 0)
                 
                 # Określ status kolorowy
                 if change_top >= -1:
@@ -471,13 +504,15 @@ class CryptoTrailingStopApp:
                     'Δ Od początku': f"{change_baseline:+.2f}%",
                     'Top': f"{top_eq:.6f}",
                     'Δ Od top': f"{change_top:+.2f}%",
+                    'Current Gain': f"{current_gain:+.2f}%",  # ✅ DODANE!
                     'Max Wzrost': f"{max_gain:+.2f}%",
                     'Status': status
                 })
         
         df = pd.DataFrame(matrix_data)
         
-        st.dataframe(df, use_container_width=True)
+        # ✅ WYSOKOŚĆ DOPASOWANA DO 50 WIERSZY
+        st.dataframe(df, use_container_width=True, height=800)
 
     def render_trade_history(self):
         """Renderuj historię transakcji"""
