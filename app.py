@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
 import plotly.express as px
 from dataclasses import dataclass
@@ -37,8 +37,7 @@ class CryptoTrailingStopApp:
         self.data_file = "trailing_stop_data.json"
         
     def init_session_state(self):
-        """Inicjalizacja stanu sesji z AUTOMATYCZNYM WCZYTANIEM"""
-        # WCZYTAJ DANE PRZED INICJALIZACJĄ
+        """Inicjalizacja stanu sesji z automatycznym wczytaniem danych"""
         saved_data = self.load_data()
         
         if 'portfolio' not in st.session_state:
@@ -51,8 +50,20 @@ class CryptoTrailingStopApp:
             st.session_state.tracking = False
         if 'price_updates' not in st.session_state:
             st.session_state.price_updates = 0
-        
-        st.success(f"✅ Wczytano {len(st.session_state.trades)} transakcji i {len(st.session_state.portfolio)} slotów")
+        if 'last_tracking_time' not in st.session_state:
+            st.session_state.last_tracking_time = datetime.now()
+            
+        # Sprawdź czy była długa nieaktywność
+        self.check_inactivity_period()
+
+    def check_inactivity_period(self):
+        """Sprawdź i poinformuj o okresie nieaktywności"""
+        if st.session_state.trades:
+            last_trade_time = max(trade['timestamp'] for trade in st.session_state.trades)
+            hours_since_trade = (datetime.now() - last_trade_time).total_seconds() / 3600
+            
+            if hours_since_trade > 6:
+                st.warning(f"⏰ Ostatnia transakcja była {hours_since_trade:.1f} godzin temu - mogły zostać przegapione okazje!")
 
     def load_data(self) -> dict:
         """Automatyczne wczytywanie danych z pliku"""
@@ -75,21 +86,8 @@ class CryptoTrailingStopApp:
                         'reason': trade['reason']
                     })
                 
-                # Konwertuj portfolio
-                loaded_portfolio = []
-                for slot in data.get('portfolio', []):
-                    loaded_portfolio.append({
-                        'token': slot['token'],
-                        'quantity': slot['quantity'],
-                        'baseline': slot['baseline'],
-                        'top_equivalent': slot['top_equivalent'],
-                        'current_gain': slot['current_gain'],
-                        'max_gain': slot['max_gain'],
-                        'usdt_value': slot.get('usdt_value', 0)
-                    })
-                
                 return {
-                    'portfolio': loaded_portfolio,
+                    'portfolio': data.get('portfolio', []),
                     'trades': loaded_trades
                 }
                 
@@ -157,6 +155,7 @@ class CryptoTrailingStopApp:
             st.session_state.prices[token].last_update = datetime.now()
         
         st.session_state.price_updates += 1
+        st.session_state.last_tracking_time = datetime.now()
 
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
         """Oblicz ekwiwalent z uwzględnieniem fee"""
@@ -297,6 +296,7 @@ class CryptoTrailingStopApp:
             os.remove(self.data_file)
         
         st.success("🗑️ Wszystkie dane zostały wyczyszczone!")
+        st.rerun()
 
     def render_sidebar(self):
         """Renderuj panel boczny"""
@@ -314,7 +314,7 @@ class CryptoTrailingStopApp:
                 selected_token = st.selectbox("Wybierz token:", available_tokens)
                 quantity = st.number_input("Ilość:", min_value=0.0001, value=1.0, step=0.1, format="%.4f")
                 
-                if st.button("Dodaj do portfolio", type="primary"):
+                if st.button("Dodaj do portfolio", type="primary", use_container_width=True):
                     self.add_to_portfolio(selected_token, quantity)
                     st.rerun()
             elif len(st.session_state.portfolio) >= 5:
@@ -351,7 +351,6 @@ class CryptoTrailingStopApp:
                 
                 if st.button("🗑️ Wyczyść wszystkie dane", use_container_width=True):
                     self.clear_all_data()
-                    st.rerun()
             
             # Informacje o trailing stop
             st.subheader("🎯 Trailing Stop")
@@ -401,6 +400,14 @@ class CryptoTrailingStopApp:
                 change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
                 max_gain = slot['max_gain'].get(token, 0)
                 
+                # Określ status kolorowy
+                if change_top >= -1:
+                    status = "🟢"
+                elif change_top >= -3:
+                    status = "🟡" 
+                else:
+                    status = "🔴"
+                
                 matrix_data.append({
                     'Token': token,
                     'Aktualny': current_eq,
@@ -409,7 +416,7 @@ class CryptoTrailingStopApp:
                     'Top': top_eq,
                     'Δ Od top': change_top,
                     'Max Wzrost': max_gain,
-                    'Status': '🟢' if change_top >= -1 else '🟡' if change_top >= -3 else '🔴'
+                    'Status': status
                 })
         
         df = pd.DataFrame(matrix_data)
@@ -465,14 +472,15 @@ class CryptoTrailingStopApp:
             
         st.header("📈 Wizualizacje")
         
-        # Wykres wartości portfolio w USDT
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("Wartość Portfolio (USDT)")
             portfolio_values = []
             labels = []
-            for slot in st.session_state.portfolio:
+            colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
+            
+            for i, slot in enumerate(st.session_state.portfolio):
                 value = slot['quantity'] * st.session_state.prices[slot['token']].bid_price
                 portfolio_values.append(value)
                 labels.append(f"{slot['token']}\n({slot['quantity']:.2f})")
@@ -480,8 +488,9 @@ class CryptoTrailingStopApp:
             fig = px.pie(
                 values=portfolio_values, 
                 names=labels,
-                color_discrete_sequence=px.colors.sequential.RdBu
+                color_discrete_sequence=colors[:len(portfolio_values)]
             )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig, use_container_width=True)
         
         with col2:
@@ -493,7 +502,8 @@ class CryptoTrailingStopApp:
                 x=tokens, 
                 y=quantities,
                 color=tokens,
-                labels={'x': 'Token', 'y': 'Ilość'}
+                labels={'x': 'Token', 'y': 'Ilość'},
+                color_discrete_sequence=px.colors.qualitative.Set3
             )
             st.plotly_chart(fig2, use_container_width=True)
 
