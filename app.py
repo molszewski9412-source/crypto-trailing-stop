@@ -36,6 +36,100 @@ class CryptoTrailingStopApp:
         }
         self.data_file = "trailing_stop_data.json"
         
+        # Lista tokenów do śledzenia
+        self.tokens_to_track = [
+            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'MATIC',
+            'LTC', 'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'EOS', 'XTZ',
+            'AAVE', 'COMP', 'MKR', 'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX',
+            'TRX', 'VET', 'THETA', 'FTM', 'ONE', 'CELO', 'RSR', 'OCEAN', 'BAND', 'NKN',
+            'STMX', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ', 'CHZ', 'ALICE'
+        ]
+        
+    def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
+        """Pobierz WSZYSTKIE ceny bid/ask z MEXC w JEDNYM zapytaniu"""
+        prices = {}
+        
+        try:
+            # Bulk endpoint MEXC - pobiera wszystkie pary
+            url = "https://api.mexc.com/api/v3/ticker/bookTicker"
+            
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                all_data = response.json()
+                
+                # Filtruj tylko pary USDT które nas interesują
+                usdt_pairs = {item['symbol']: item for item in all_data 
+                             if item['symbol'].endswith('USDT')}
+                
+                found_tokens = 0
+                for token in self.tokens_to_track:
+                    symbol = f"{token}USDT"
+                    if symbol in usdt_pairs:
+                        data = usdt_pairs[symbol]
+                        bid_price = float(data['bidPrice'])
+                        ask_price = float(data['askPrice'])
+                        
+                        prices[token] = TokenInfo(
+                            symbol=token,
+                            bid_price=bid_price,
+                            ask_price=ask_price,
+                            last_update=datetime.now()
+                        )
+                        found_tokens += 1
+                
+                st.success(f"✅ Pobrano {found_tokens}/{len(self.tokens_to_track)} tokenów z MEXC")
+                
+                # Dla brakujących tokenów użyj symulacji
+                missing_tokens = set(self.tokens_to_track) - set(prices.keys())
+                for token in missing_tokens:
+                    base_price = max(10, abs(hash(token)) % 5000)
+                    prices[token] = TokenInfo(
+                        symbol=token,
+                        bid_price=base_price * 0.999,
+                        ask_price=base_price * 1.001,
+                        last_update=datetime.now()
+                    )
+                    st.warning(f"⚠️ Symulacja ceny dla {token} (brak w API)")
+                    
+            else:
+                st.error(f"❌ Błąd API MEXC: {response.status_code}")
+                # Fallback - wszystkie ceny symulowane
+                prices = self.get_simulated_prices()
+                
+        except Exception as e:
+            st.error(f"❌ Błąd połączenia z MEXC: {e}")
+            # Fallback - wszystkie ceny symulowane
+            prices = self.get_simulated_prices()
+        
+        return prices
+
+    def get_simulated_prices(self) -> Dict[str, TokenInfo]:
+        """Fallback - symulowane ceny gdy API nie działa"""
+        prices = {}
+        for token in self.tokens_to_track:
+            base_price = max(10, abs(hash(token)) % 5000)
+            prices[token] = TokenInfo(
+                symbol=token,
+                bid_price=base_price * 0.999,
+                ask_price=base_price * 1.001,
+                last_update=datetime.now()
+            )
+        return prices
+
+    def get_initial_prices(self) -> Dict[str, TokenInfo]:
+        """Pobierz początkowe ceny - REALNE z MEXC"""
+        st.info("🔄 Pobieranie rzeczywistych cen z MEXC (bulk API)...")
+        return self.get_all_prices_bulk()
+
+    def update_real_prices(self):
+        """Aktualizuj ceny rzeczywistymi danymi z MEXC"""
+        if st.session_state.tracking:
+            new_prices = self.get_all_prices_bulk()
+            st.session_state.prices = new_prices
+            st.session_state.price_updates += 1
+            st.session_state.last_tracking_time = datetime.now()
+
     def init_session_state(self):
         """Inicjalizacja stanu sesji z automatycznym wczytaniem danych"""
         saved_data = self.load_data()
@@ -123,39 +217,6 @@ class CryptoTrailingStopApp:
                 
         except Exception as e:
             st.error(f"❌ Błąd zapisu danych: {e}")
-
-    def get_initial_prices(self) -> Dict[str, TokenInfo]:
-        """Pobierz początkowe ceny - SYMULACJA"""
-        popular_tokens = [
-            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'MATIC',
-            'LTC', 'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'EOS', 'XTZ',
-            'AAVE', 'COMP', 'MKR', 'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX'
-        ]
-        
-        prices = {}
-        for token in popular_tokens:
-            base_price = max(10, abs(hash(token)) % 5000)
-            prices[token] = TokenInfo(
-                symbol=token,
-                bid_price=base_price * 0.999,
-                ask_price=base_price * 1.001,
-                last_update=datetime.now()
-            )
-        return prices
-
-    def simulate_price_updates(self):
-        """Symulacja aktualizacji cen"""
-        for token, info in st.session_state.prices.items():
-            change = (np.random.random() - 0.5) * 0.08  # ±4%
-            current_mid = (info.bid_price + info.ask_price) / 2
-            new_mid = max(0.01, current_mid * (1 + change))
-            
-            st.session_state.prices[token].bid_price = new_mid * 0.999
-            st.session_state.prices[token].ask_price = new_mid * 1.001
-            st.session_state.prices[token].last_update = datetime.now()
-        
-        st.session_state.price_updates += 1
-        st.session_state.last_tracking_time = datetime.now()
 
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
         """Oblicz ekwiwalent z uwzględnieniem fee"""
@@ -303,6 +364,11 @@ class CryptoTrailingStopApp:
         with st.sidebar:
             st.title("⚙️ Konfiguracja")
             
+            # Przycisk ręcznej aktualizacji cen
+            if st.button("🔄 Aktualizuj ceny z MEXC", use_container_width=True):
+                self.update_real_prices()
+                st.rerun()
+            
             # Dodawanie tokenów do portfolio
             st.subheader("➕ Dodaj Token")
             available_tokens = [
@@ -340,6 +406,17 @@ class CryptoTrailingStopApp:
             st.metric("Transakcje", len(st.session_state.trades))
             st.metric("Aktualizacje cen", st.session_state.price_updates)
             st.metric("Status", "AKTYWNY" if st.session_state.tracking else "PAUZA")
+            
+            # Informacje o cenach
+            st.subheader("💰 Aktualne ceny")
+            if st.session_state.prices:
+                sample_tokens = list(st.session_state.prices.keys())[:3]  # Pierwsze 3 tokeny
+                for token in sample_tokens:
+                    price_info = st.session_state.prices[token]
+                    st.caption(f"{token}: {price_info.bid_price:.4f} / {price_info.ask_price:.4f}")
+                
+                last_update = list(st.session_state.prices.values())[0].last_update
+                st.caption(f"🕒 Ostatnia aktualizacja: {last_update.strftime('%H:%M:%S')}")
             
             # Informacje o danych
             st.subheader("💾 Zarządzanie danymi")
@@ -500,7 +577,7 @@ class CryptoTrailingStopApp:
         self.init_session_state()
         
         # Nagłówek
-        st.title("🚀 Crypto Trailing Stop Matrix")
+        st.title("🚀 Crypto Trailing Stop Matrix - REAL TIME MEXC")
         st.markdown("---")
         
         # Renderuj komponenty
@@ -514,9 +591,9 @@ class CryptoTrailingStopApp:
             
             # Automatyczne aktualizacje gdy tracking aktywny
             if st.session_state.tracking:
-                self.simulate_price_updates()
+                self.update_real_prices()  # ✅ REALNE CENY Z BULK API!
                 self.check_and_execute_trades()
-                time.sleep(2)  # Symulacja opóźnienia
+                time.sleep(30)  # Aktualizuj co 30 sekund
                 st.rerun()
 
 # Uruchom aplikację
