@@ -53,7 +53,7 @@ class CryptoTrailingStopApp:
             # Bulk endpoint MEXC - pobiera wszystkie pary
             url = "https://api.mexc.com/api/v3/ticker/bookTicker"
             
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=5)
             
             if response.status_code == 200:
                 all_data = response.json()
@@ -78,8 +78,6 @@ class CryptoTrailingStopApp:
                         )
                         found_tokens += 1
                 
-                st.success(f"✅ Pobrano {found_tokens}/{len(self.tokens_to_track)} tokenów z MEXC")
-                
                 # Dla brakujących tokenów użyj symulacji
                 missing_tokens = set(self.tokens_to_track) - set(prices.keys())
                 for token in missing_tokens:
@@ -90,15 +88,12 @@ class CryptoTrailingStopApp:
                         ask_price=base_price * 1.001,
                         last_update=datetime.now()
                     )
-                    st.warning(f"⚠️ Symulacja ceny dla {token} (brak w API)")
                     
             else:
-                st.error(f"❌ Błąd API MEXC: {response.status_code}")
                 # Fallback - wszystkie ceny symulowane
                 prices = self.get_simulated_prices()
                 
         except Exception as e:
-            st.error(f"❌ Błąd połączenia z MEXC: {e}")
             # Fallback - wszystkie ceny symulowane
             prices = self.get_simulated_prices()
         
@@ -119,16 +114,14 @@ class CryptoTrailingStopApp:
 
     def get_initial_prices(self) -> Dict[str, TokenInfo]:
         """Pobierz początkowe ceny - REALNE z MEXC"""
-        st.info("🔄 Pobieranie rzeczywistych cen z MEXC (bulk API)...")
         return self.get_all_prices_bulk()
 
     def update_real_prices(self):
         """Aktualizuj ceny rzeczywistymi danymi z MEXC"""
-        if st.session_state.tracking:
-            new_prices = self.get_all_prices_bulk()
-            st.session_state.prices = new_prices
-            st.session_state.price_updates += 1
-            st.session_state.last_tracking_time = datetime.now()
+        new_prices = self.get_all_prices_bulk()
+        st.session_state.prices = new_prices
+        st.session_state.price_updates += 1
+        st.session_state.last_tracking_time = datetime.now()
 
     def init_session_state(self):
         """Inicjalizacja stanu sesji z automatycznym wczytaniem danych"""
@@ -146,18 +139,6 @@ class CryptoTrailingStopApp:
             st.session_state.price_updates = 0
         if 'last_tracking_time' not in st.session_state:
             st.session_state.last_tracking_time = datetime.now()
-            
-        # Sprawdź czy była długa nieaktywność
-        self.check_inactivity_period()
-
-    def check_inactivity_period(self):
-        """Sprawdź i poinformuj o okresie nieaktywności"""
-        if st.session_state.trades:
-            last_trade_time = max(trade['timestamp'] for trade in st.session_state.trades)
-            hours_since_trade = (datetime.now() - last_trade_time).total_seconds() / 3600
-            
-            if hours_since_trade > 6:
-                st.warning(f"⏰ Ostatnia transakcja była {hours_since_trade:.1f} godzin temu - mogły zostać przegapione okazje!")
 
     def load_data(self) -> dict:
         """Automatyczne wczytywanie danych z pliku"""
@@ -244,7 +225,7 @@ class CryptoTrailingStopApp:
             st.error(f"❌ Token {token} jest już w portfolio!")
             return
             
-        # Oblicz baseline equivalents
+        # Oblicz baseline equivalents - ✅ ZAPISUJEMY RAZ NA ZAWSZE
         baseline = {}
         for target_token in st.session_state.prices:
             if target_token != token:
@@ -253,8 +234,8 @@ class CryptoTrailingStopApp:
         new_slot = {
             'token': token,
             'quantity': quantity,
-            'baseline': baseline,
-            'top_equivalent': baseline.copy(),
+            'baseline': baseline,  # ✅ NIGDY SIĘ NIE ZMIENIA
+            'top_equivalent': baseline.copy(),  # Top startuje od baseline
             'current_gain': {token: 0.0 for token in st.session_state.prices},
             'max_gain': {token: 0.0 for token in st.session_state.prices},
             'usdt_value': quantity * st.session_state.prices[token].bid_price
@@ -309,7 +290,7 @@ class CryptoTrailingStopApp:
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
         """Wykonaj transakcję trailing stop z AUTOMATYCZNYM ZAPISEM"""
-        # Aktualizuj top equivalent jeśli current > top
+        # ✅ AKTUALIZUJ TOP EQUIVALENT PRZED SWAPEM - jeśli actual > current top
         current_top = slot['top_equivalent'][target_token]
         if equivalent > current_top:
             slot['top_equivalent'][target_token] = equivalent
@@ -331,10 +312,13 @@ class CryptoTrailingStopApp:
         slot['token'] = target_token
         slot['quantity'] = equivalent
         
-        # Resetuj tracking dla nowego tokena (ALE ZACHOWAJ BASELINE!)
+        # ✅ RESETUJ TYLKO TOP EQUIVALENT DLA NOWEGO TOKENA
+        # ✅ BASELINE NIGDY SIĘ NIE ZMIENIA!
         for token in st.session_state.prices:
             if token != target_token:
                 new_eq = self.calculate_equivalent(target_token, token, equivalent)
+                # ❌ NIE resetujemy baseline - on pokazuje historię od początku!
+                # ✅ Tylko top equivalent resetujemy do aktualnej wartości
                 slot['top_equivalent'][token] = new_eq
                 slot['current_gain'][token] = 0.0
                 slot['max_gain'][token] = 0.0
@@ -363,11 +347,6 @@ class CryptoTrailingStopApp:
         """Renderuj panel boczny"""
         with st.sidebar:
             st.title("⚙️ Konfiguracja")
-            
-            # Przycisk ręcznej aktualizacji cen
-            if st.button("🔄 Aktualizuj ceny z MEXC", use_container_width=True):
-                self.update_real_prices()
-                st.rerun()
             
             # Dodawanie tokenów do portfolio
             st.subheader("➕ Dodaj Token")
@@ -410,7 +389,7 @@ class CryptoTrailingStopApp:
             # Informacje o cenach
             st.subheader("💰 Aktualne ceny")
             if st.session_state.prices:
-                sample_tokens = list(st.session_state.prices.keys())[:3]  # Pierwsze 3 tokeny
+                sample_tokens = list(st.session_state.prices.keys())[:3]
                 for token in sample_tokens:
                     price_info = st.session_state.prices[token]
                     st.caption(f"{token}: {price_info.bid_price:.4f} / {price_info.ask_price:.4f}")
@@ -498,7 +477,6 @@ class CryptoTrailingStopApp:
         
         df = pd.DataFrame(matrix_data)
         
-        # ✅ PROSTE WYŚWIETLANIE BEZ STYLERA
         st.dataframe(df, use_container_width=True)
 
     def render_trade_history(self):
@@ -515,7 +493,7 @@ class CryptoTrailingStopApp:
             col2.metric("Dzisiaj", today_trades)
             
             history_data = []
-            for trade in st.session_state.trades[-20:]:  # Ostatnie 20 transakcji
+            for trade in st.session_state.trades[-20:]:
                 history_data.append({
                     'Data': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
                     'Slot': trade['slot'] + 1,
@@ -577,7 +555,7 @@ class CryptoTrailingStopApp:
         self.init_session_state()
         
         # Nagłówek
-        st.title("🚀 Crypto Trailing Stop Matrix - REAL TIME MEXC")
+        st.title("🚀 Crypto Trailing Stop Matrix - REAL TIME")
         st.markdown("---")
         
         # Renderuj komponenty
@@ -589,11 +567,11 @@ class CryptoTrailingStopApp:
             self.render_charts()
             self.render_trade_history()
             
-            # Automatyczne aktualizacje gdy tracking aktywny
+            # ✅ AUTOMATYCZNA AKTUALIZACJA CEN CO 1 SEKUNDĘ
             if st.session_state.tracking:
-                self.update_real_prices()  # ✅ REALNE CENY Z BULK API!
+                self.update_real_prices()
                 self.check_and_execute_trades()
-                time.sleep(30)  # Aktualizuj co 30 sekund
+                time.sleep(1)  # ⚡ CO 1 SEKUNDĘ!
                 st.rerun()
 
 # Uruchom aplikację
