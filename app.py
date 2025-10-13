@@ -9,6 +9,7 @@ import plotly.express as px
 from dataclasses import dataclass
 from typing import Dict, List
 import json
+import os
 
 # Konfiguracja strony
 st.set_page_config(
@@ -33,19 +34,97 @@ class CryptoTrailingStopApp:
             1.0: 0.5,   # 1% gain -> 0.5% TS  
             2.0: 1.0    # 2% gain -> 1% TS
         }
+        self.data_file = "trailing_stop_data.json"
         
     def init_session_state(self):
-        """Inicjalizacja stanu sesji"""
+        """Inicjalizacja stanu sesji z AUTOMATYCZNYM WCZYTANIEM"""
+        # WCZYTAJ DANE PRZED INICJALIZACJĄ
+        saved_data = self.load_data()
+        
         if 'portfolio' not in st.session_state:
-            st.session_state.portfolio = []
+            st.session_state.portfolio = saved_data.get('portfolio', [])
         if 'prices' not in st.session_state:
             st.session_state.prices = self.get_initial_prices()
         if 'trades' not in st.session_state:
-            st.session_state.trades = []
+            st.session_state.trades = saved_data.get('trades', [])
         if 'tracking' not in st.session_state:
             st.session_state.tracking = False
         if 'price_updates' not in st.session_state:
             st.session_state.price_updates = 0
+        
+        st.success(f"✅ Wczytano {len(st.session_state.trades)} transakcji i {len(st.session_state.portfolio)} slotów")
+
+    def load_data(self) -> dict:
+        """Automatyczne wczytywanie danych z pliku"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r') as f:
+                    data = json.load(f)
+                
+                # Konwertuj stringi datetime z powrotem na obiekty
+                loaded_trades = []
+                for trade in data.get('trades', []):
+                    loaded_trades.append({
+                        'timestamp': datetime.fromisoformat(trade['timestamp']),
+                        'from_token': trade['from_token'],
+                        'to_token': trade['to_token'],
+                        'from_quantity': trade['from_quantity'],
+                        'to_quantity': trade['to_quantity'],
+                        'slot': trade['slot'],
+                        'max_gain': trade['max_gain'],
+                        'reason': trade['reason']
+                    })
+                
+                # Konwertuj portfolio
+                loaded_portfolio = []
+                for slot in data.get('portfolio', []):
+                    loaded_portfolio.append({
+                        'token': slot['token'],
+                        'quantity': slot['quantity'],
+                        'baseline': slot['baseline'],
+                        'top_equivalent': slot['top_equivalent'],
+                        'current_gain': slot['current_gain'],
+                        'max_gain': slot['max_gain'],
+                        'usdt_value': slot.get('usdt_value', 0)
+                    })
+                
+                return {
+                    'portfolio': loaded_portfolio,
+                    'trades': loaded_trades
+                }
+                
+        except Exception as e:
+            st.error(f"❌ Błąd wczytywania danych: {e}")
+        
+        return {'portfolio': [], 'trades': []}
+
+    def save_data(self):
+        """Automatyczny zapis wszystkich danych"""
+        try:
+            data = {
+                'portfolio': st.session_state.portfolio,
+                'trades': [
+                    {
+                        'timestamp': trade['timestamp'].isoformat(),
+                        'from_token': trade['from_token'],
+                        'to_token': trade['to_token'],
+                        'from_quantity': trade['from_quantity'],
+                        'to_quantity': trade['to_quantity'],
+                        'slot': trade['slot'],
+                        'max_gain': trade['max_gain'],
+                        'reason': trade['reason']
+                    }
+                    for trade in st.session_state.trades
+                ],
+                'last_save': datetime.now().isoformat(),
+                'save_count': len(st.session_state.trades)
+            }
+            
+            with open(self.data_file, 'w') as f:
+                json.dump(data, f, indent=2)
+                
+        except Exception as e:
+            st.error(f"❌ Błąd zapisu danych: {e}")
 
     def get_initial_prices(self) -> Dict[str, TokenInfo]:
         """Pobierz początkowe ceny - SYMULACJA"""
@@ -67,7 +146,7 @@ class CryptoTrailingStopApp:
         return prices
 
     def simulate_price_updates(self):
-        """Symulacja aktualizacji cen - W PRODUKCJI ZASTĄP MEXC API"""
+        """Symulacja aktualizacji cen"""
         for token, info in st.session_state.prices.items():
             change = (np.random.random() - 0.5) * 0.08  # ±4%
             current_mid = (info.bid_price + info.ask_price) / 2
@@ -96,7 +175,7 @@ class CryptoTrailingStopApp:
         return equivalent
 
     def add_to_portfolio(self, token: str, quantity: float):
-        """Dodaj token do portfolio"""
+        """Dodaj token do portfolio z AUTOMATYCZNYM ZAPISEM"""
         if len(st.session_state.portfolio) >= 5:
             st.error("❌ Maksymalnie 5 slotów w portfolio!")
             return
@@ -122,6 +201,10 @@ class CryptoTrailingStopApp:
         }
         
         st.session_state.portfolio.append(new_slot)
+        
+        # 💾 AUTOMATYCZNY ZAPIS PO DODANIU SLOTU
+        self.save_data()
+        
         st.success(f"✅ Dodano {quantity:.4f} {token} do portfolio!")
 
     def check_and_execute_trades(self):
@@ -165,7 +248,7 @@ class CryptoTrailingStopApp:
                         self.execute_trade(slot_idx, slot, target_token, current_eq, max_gain)
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """Wykonaj transakcję trailing stop"""
+        """Wykonaj transakcję trailing stop z AUTOMATYCZNYM ZAPISEM"""
         # Aktualizuj top equivalent jeśli current > top
         current_top = slot['top_equivalent'][target_token]
         if equivalent > current_top:
@@ -198,8 +281,22 @@ class CryptoTrailingStopApp:
         
         st.session_state.trades.append(trade)
         
-        # Komunikat o transakcji
+        # 💾 AUTOMATYCZNY ZAPIS PO KAŻDEJ TRANSAKCJI
+        self.save_data()
+        
         st.toast(f"🔁 SWAP: {old_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
+
+    def clear_all_data(self):
+        """Wyczyść wszystkie dane"""
+        st.session_state.portfolio = []
+        st.session_state.trades = []
+        st.session_state.tracking = False
+        
+        # Usuń plik danych
+        if os.path.exists(self.data_file):
+            os.remove(self.data_file)
+        
+        st.success("🗑️ Wszystkie dane zostały wyczyszczone!")
 
     def render_sidebar(self):
         """Renderuj panel boczny"""
@@ -243,6 +340,18 @@ class CryptoTrailingStopApp:
             st.metric("Transakcje", len(st.session_state.trades))
             st.metric("Aktualizacje cen", st.session_state.price_updates)
             st.metric("Status", "AKTYWNY" if st.session_state.tracking else "PAUZA")
+            
+            # Informacje o danych
+            st.subheader("💾 Zarządzanie danymi")
+            if os.path.exists(self.data_file):
+                file_time = os.path.getmtime(self.data_file)
+                file_size = os.path.getsize(self.data_file) / 1024
+                st.caption(f"📁 Ostatni zapis: {datetime.fromtimestamp(file_time).strftime('%H:%M:%S')}")
+                st.caption(f"📊 Rozmiar danych: {file_size:.1f} KB")
+                
+                if st.button("🗑️ Wyczyść wszystkie dane", use_container_width=True):
+                    self.clear_all_data()
+                    st.rerun()
             
             # Informacje o trailing stop
             st.subheader("🎯 Trailing Stop")
@@ -325,10 +434,18 @@ class CryptoTrailingStopApp:
         if st.session_state.trades:
             st.header("📋 Historia Transakcji")
             
+            # Statystyki historii
+            total_trades = len(st.session_state.trades)
+            today_trades = len([t for t in st.session_state.trades if t['timestamp'].date() == datetime.now().date()])
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Łącznie transakcji", total_trades)
+            col2.metric("Dzisiaj", today_trades)
+            
             history_data = []
             for trade in st.session_state.trades[-20:]:  # Ostatnie 20 transakcji
                 history_data.append({
-                    'Czas': trade['timestamp'].strftime('%H:%M:%S'),
+                    'Data': trade['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
                     'Slot': trade['slot'] + 1,
                     'Z': trade['from_token'],
                     'Na': trade['to_token'],
@@ -338,6 +455,8 @@ class CryptoTrailingStopApp:
                 })
             
             st.dataframe(pd.DataFrame(history_data), use_container_width=True)
+        else:
+            st.info("📝 Brak historii transakcji")
 
     def render_charts(self):
         """Renderuj wykresy"""
