@@ -28,15 +28,11 @@ class TokenInfo:
 
 class CryptoTrailingStopApp:
     def __init__(self):
-        self.fee_rate = 0.00025  # 0.025%
-        self.trailing_stop_levels = {
-            0.5: 0.2,   # 0.5% gain -> 0.2% TS
-            1.0: 0.5,   # 1% gain -> 0.5% TS  
-            2.0: 1.0    # 2% gain -> 1% TS
-        }
+        self.fee_rate = 0.00025
+        self.trailing_stop_levels = {0.5: 0.2, 1.0: 0.5, 2.0: 1.0}
         self.data_file = "trailing_stop_data.json"
         
-        # ✅ ZAKTUALIZOWANA LISTA TOKENÓW - WSZYSTKIE DZIAŁAJĄCE NA MEXC
+        # Lista tokenów - sprawdzone na MEXC
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
@@ -45,98 +41,42 @@ class CryptoTrailingStopApp:
             'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RNDR'
         ]
         
-    def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
-<<<<<<< HEAD
-    """Pobierz ceny z MEXC - Z DIAGNOSTYKĄ I ELASTYCZNOŚCIĄ"""
-    prices = {}
-    
-    try:
-        # Bulk endpoint MEXC
-        url = "https://api.mexc.com/api/v3/ticker/bookTicker"
-=======
-        """Pobierz WSZYSTKIE ceny bid/ask z MEXC w JEDNYM zapytaniu - POMIJAJ problematyczne tickery"""
-        prices = {}
-        problematic_tokens = []
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
-        
-        st.info("🔄 Łączenie z MEXC API...")
-        response = requests.get(url, timeout=15)
-        
-        if response.status_code == 200:
-            all_data = response.json()
-            st.success(f"✅ Pobrano dane dla {len(all_data)} par")
-            
-<<<<<<< HEAD
-            # Filtruj pary USDT
-            usdt_pairs = {item['symbol']: item for item in all_data 
-                         if item['symbol'].endswith('USDT')}
-            
-            found_tokens = 0
-            problematic_tokens = []
-            
-            for token in self.tokens_to_track:
-                symbol = f"{token}USDT"
-                if symbol in usdt_pairs:
-                    data = usdt_pairs[symbol]
-                    bid_price = float(data['bidPrice'])
-                    ask_price = float(data['askPrice'])
-                    
-                    prices[token] = TokenInfo(
-                        symbol=token,
-                        bid_price=bid_price,
-                        ask_price=ask_price,
-                        last_update=datetime.now()
-                    )
-                    found_tokens += 1
-                else:
-                    problematic_tokens.append(token)
-            
-            if problematic_tokens:
-                st.warning(f"⚠️ Brak par dla {len(problematic_tokens)} tokenów: {', '.join(problematic_tokens[:10])}")
-            
-            st.success(f"✅ Znaleziono ceny dla {found_tokens}/50 tokenów")
-            return prices
-            
-        else:
-            st.error(f"❌ Błąd HTTP {response.status_code} od MEXC API")
-            return {}
-            
-    except requests.exceptions.Timeout:
-        st.error("⏰ Timeout - MEXC API nie odpowiada")
-        return {}
-    except requests.exceptions.ConnectionError:
-        st.error("🌐 Błąd połączenia - sprawdź internet")
-        return {}
-    except Exception as e:
-        st.error(f"❌ Nieoczekiwany błąd: {e}")
-        return {}
-
-    def get_initial_prices(self) -> Dict[str, TokenInfo]:
-        """Pobierz początkowe ceny - TYLKO REALNE z MEXC"""
-        prices = self.get_all_prices_bulk()
-        if not prices:
-            st.error("🚫 Nie można pobrać cen z MEXC. Spróbuj ponownie.")
-        return prices
-
-    def update_real_prices(self):
-        """Aktualizuj ceny rzeczywistymi danymi z MEXC"""
-        new_prices = self.get_all_prices_bulk()
-        if new_prices:  # Tylko jeśli udało się pobrać ceny
-            st.session_state.prices = new_prices
-            st.session_state.price_updates += 1
-            st.session_state.last_tracking_time = datetime.now()
-
-    def initialize_portfolio_from_usdt(self, usdt_amount: float, selected_tokens: List[str]):
-        """✅ NOWA FUNKCJA: Inicjuj portfolio z USDT - podział na 5 tokenów"""
-=======
+    def test_connection(self):
+        """Testuj połączenie z MEXC API"""
+        try:
+            url = "https://api.mexc.com/api/v3/ping"
             response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                return True, "✅ Połączenie z MEXC API działa"
+            else:
+                return False, f"❌ MEXC API zwraca status: {response.status_code}"
+        except Exception as e:
+            return False, f"❌ Błąd połączenia: {e}"
+
+    def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
+        """Pobierz ceny z MEXC - bezpieczna wersja z diagnostyką"""
+        prices = {}
+        
+        try:
+            url = "https://api.mexc.com/api/v3/ticker/bookTicker"
+            response = requests.get(url, timeout=15)
             
             if response.status_code == 200:
                 all_data = response.json()
                 
-                # Filtruj tylko pary USDT które nas interesują
-                usdt_pairs = {item['symbol']: item for item in all_data 
-                             if item['symbol'].endswith('USDT')}
+                if not all_data:
+                    st.error("❌ MEXC zwrócił pustą odpowiedź")
+                    return {}
+                
+                # Filtruj pary USDT
+                usdt_pairs = {}
+                for item in all_data:
+                    symbol = item.get('symbol', '')
+                    if symbol.endswith('USDT'):
+                        usdt_pairs[symbol] = item
+                
+                found_tokens = 0
+                problematic_tokens = []
                 
                 for token in self.tokens_to_track:
                     symbol = f"{token}USDT"
@@ -146,7 +86,7 @@ class CryptoTrailingStopApp:
                             bid_price = float(data['bidPrice'])
                             ask_price = float(data['askPrice'])
                             
-                            # Dodatkowa walidacja - sprawdź czy ceny są sensowne
+                            # Walidacja cen
                             if bid_price > 0 and ask_price > 0 and bid_price <= ask_price:
                                 prices[token] = TokenInfo(
                                     symbol=token,
@@ -154,6 +94,7 @@ class CryptoTrailingStopApp:
                                     ask_price=ask_price,
                                     last_update=datetime.now()
                                 )
+                                found_tokens += 1
                             else:
                                 problematic_tokens.append(f"{token}(nieprawidłowe ceny)")
                         except (ValueError, KeyError):
@@ -162,54 +103,43 @@ class CryptoTrailingStopApp:
                         problematic_tokens.append(token)
                 
                 if problematic_tokens:
-                    st.warning(f"⚠️ Pominięto tokeny: {', '.join(problematic_tokens)}")
+                    st.warning(f"⚠️ Brak cen dla: {', '.join(problematic_tokens[:10])}")
+                
+                if prices:
+                    st.success(f"✅ Pobrano ceny dla {found_tokens}/50 tokenów")
+                    return prices
+                else:
+                    st.error("🚫 Nie udało się pobrać żadnych cen")
+                    return {}
                     
             else:
-                st.error(f"❌ Błąd API MEXC: {response.status_code}")
-                # Nie zwracaj pustego słownika, użyj poprzednich cen jeśli istnieją
-                if hasattr(st.session_state, 'prices') and st.session_state.prices:
-                    st.warning("🔄 Używam poprzednich danych cenowych")
-                    return st.session_state.prices
+                st.error(f"❌ Błąd HTTP {response.status_code} od MEXC")
                 return {}
-                    
-        except Exception as e:
-            st.error(f"❌ Błąd połączenia z MEXC: {e}")
-            # W przypadku błędu, użyj poprzednich cen jeśli istnieją
-            if hasattr(st.session_state, 'prices') and st.session_state.prices:
-                st.warning("🔄 Używam poprzednich danych cenowych")
-                return st.session_state.prices
+                
+        except requests.exceptions.Timeout:
+            st.error("⏰ Timeout - MEXC API nie odpowiada")
             return {}
-        
-        return prices
+        except requests.exceptions.ConnectionError:
+            st.error("🌐 Błąd połączenia - sprawdź internet")
+            return {}
+        except Exception as e:
+            st.error(f"❌ Nieoczekiwany błąd: {e}")
+            return {}
 
     def get_initial_prices(self) -> Dict[str, TokenInfo]:
-        """Pobierz początkowe ceny - TYLKO REALNE z MEXC"""
-        prices = self.get_all_prices_bulk()
-        if not prices:
-            st.error("🚫 Nie można pobrać cen z MEXC. Spróbuj ponownie.")
-        return prices
+        """Pobierz początkowe ceny"""
+        return self.get_all_prices_bulk()
 
     def update_real_prices(self):
-        """Aktualizuj ceny rzeczywistymi danymi z MEXC - bezpieczna wersja"""
-        try:
-            new_prices = self.get_all_prices_bulk()
-            if new_prices:  # Tylko jeśli udało się pobrać ceny
-                # Zachowaj stare ceny dla tokenów, których nie ma w nowych danych
-                if hasattr(st.session_state, 'prices') and st.session_state.prices:
-                    for token, price_info in st.session_state.prices.items():
-                        if token not in new_prices:
-                            new_prices[token] = price_info
-                
-                st.session_state.prices = new_prices
-                st.session_state.price_updates += 1
-                st.session_state.last_tracking_time = datetime.now()
-        except Exception as e:
-            st.error(f"❌ Błąd podczas aktualizacji cen: {e}")
-            # Kontynuuj z poprzednimi cenami
+        """Aktualizuj ceny rzeczywistymi danymi z MEXC"""
+        new_prices = self.get_all_prices_bulk()
+        if new_prices:
+            st.session_state.prices = new_prices
+            st.session_state.price_updates += 1
+            st.session_state.last_tracking_time = datetime.now()
 
     def initialize_portfolio_from_usdt(self, usdt_amount: float, selected_tokens: List[str]):
-        """Inicjuj portfolio z USDT - pomija tokeny bez cen"""
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
+        """Inicjuj portfolio z USDT - podział na 5 tokenów"""
         if len(selected_tokens) != 5:
             st.error("❌ Wybierz dokładnie 5 tokenów")
             return False
@@ -218,50 +148,23 @@ class CryptoTrailingStopApp:
             st.error("❌ Kwota USDT musi być większa od 0")
             return False
             
-<<<<<<< HEAD
-=======
         # Sprawdź które tokeny mają ceny
         available_tokens = []
-        missing_tokens = []
-        
         for token in selected_tokens:
             if token in st.session_state.prices:
                 available_tokens.append(token)
-            else:
-                missing_tokens.append(token)
         
-        if missing_tokens:
-            st.warning(f"⚠️ Tokeny bez cen: {', '.join(missing_tokens)}")
-            
-        # Jeśli mniej niż 5 tokenów z cenami, nie można utworzyć portfolio
         if len(available_tokens) < 5:
-            st.error(f"❌ Za mało tokenów z dostępnymi cenami. Dostępne: {len(available_tokens)}/5")
-            st.info("💡 Wybierz inne tokeny lub poczekaj na aktualizację cen")
+            st.error(f"❌ Za mało tokenów z dostępnymi cenami: {len(available_tokens)}/5")
             return False
         
-        # Użyj tylko pierwszych 5 dostępnych tokenów (lub wszystkich jeśli jest dokładnie 5)
-        tokens_to_use = available_tokens[:5]
-        
-        if len(tokens_to_use) < 5:
-            st.error(f"❌ Niewystarczająca liczba tokenów z cenami: {len(tokens_to_use)}/5")
-            return False
-        
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
         # Wyczyść istniejące portfolio
         st.session_state.portfolio = []
         st.session_state.trades = []
         
         usdt_per_slot = usdt_amount / 5
         
-<<<<<<< HEAD
-        for token in selected_tokens:
-            if token not in st.session_state.prices:
-                st.error(f"❌ Token {token} nie ma ceny w API")
-                return False
-                
-=======
-        for token in tokens_to_use:
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
+        for token in available_tokens:
             # Oblicz ilość tokena na podstawie ceny ask
             token_price = st.session_state.prices[token].ask_price
             quantity = (usdt_per_slot / token_price) * (1 - self.fee_rate)
@@ -273,20 +176,12 @@ class CryptoTrailingStopApp:
             max_gain = {}
             
             for target_token in self.tokens_to_track:
-<<<<<<< HEAD
-                equivalent = self.calculate_equivalent(token, target_token, quantity)
-                baseline[target_token] = equivalent
-                top_equivalent[target_token] = equivalent
-                current_gain[target_token] = 0.0
-                max_gain[target_token] = 0.0
-=======
-                if target_token in st.session_state.prices:  # Tylko dla tokenów z cenami
+                if target_token in st.session_state.prices:
                     equivalent = self.calculate_equivalent(token, target_token, quantity)
                     baseline[target_token] = equivalent
                     top_equivalent[target_token] = equivalent
                     current_gain[target_token] = 0.0
                     max_gain[target_token] = 0.0
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
             
             new_slot = {
                 'token': token,
@@ -302,11 +197,7 @@ class CryptoTrailingStopApp:
         
         # Zapisz dane
         self.save_data()
-<<<<<<< HEAD
         st.success(f"✅ Utworzono portfolio: {usdt_amount} USDT → 5 slotów")
-=======
-        st.success(f"✅ Utworzono portfolio: {usdt_amount} USDT → 5 slotów ({', '.join(tokens_to_use)})")
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
         return True
 
     def init_session_state(self):
@@ -388,11 +279,7 @@ class CryptoTrailingStopApp:
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
         """Oblicz ekwiwalent z uwzględnieniem fee - bezpieczna wersja"""
         if from_token == to_token:
-<<<<<<< HEAD
-            return quantity * (1 - self.fee_rate)  # ✅ Dla tego samego tokena też odejmij fee
-=======
             return quantity * (1 - self.fee_rate)
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
             
         prices = st.session_state.prices
         
@@ -400,14 +287,6 @@ class CryptoTrailingStopApp:
         if from_token not in prices or to_token not in prices:
             return 0.0
             
-<<<<<<< HEAD
-        # Sprzedaż from_token -> USDT
-        usdt_value = quantity * prices[from_token].bid_price * (1 - self.fee_rate)
-        # Kupno USDT -> to_token
-        equivalent = usdt_value / prices[to_token].ask_price * (1 - self.fee_rate)
-        
-        return equivalent
-=======
         try:
             # Sprzedaż from_token -> USDT
             usdt_value = quantity * prices[from_token].bid_price * (1 - self.fee_rate)
@@ -417,55 +296,54 @@ class CryptoTrailingStopApp:
             return equivalent
         except (ZeroDivisionError, KeyError):
             return 0.0
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop i wykonaj transakcje - POPRAWIONE"""
+        """Sprawdź warunki trailing stop i wykonaj transakcje - NAPRAWIONE"""
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
             
         for slot_idx, slot in enumerate(st.session_state.portfolio):
             current_tokens = [s['token'] for s in st.session_state.portfolio]
             
-            for target_token in self.tokens_to_track:  # ✅ Używaj stałej listy 50 tokenów
+            for target_token in self.tokens_to_track:
                 if target_token != slot['token'] and target_token not in current_tokens:
                     current_eq = self.calculate_equivalent(
                         slot['token'], target_token, slot['quantity']
                     )
                     
+                    # BEZPIECZNE POBRANIE WARTOŚCI
                     baseline_eq = slot['baseline'].get(target_token, current_eq)
                     current_top = slot['top_equivalent'].get(target_token, current_eq)
+                    current_max_gain = slot['max_gain'].get(target_token, 0.0)
                     
-                    # Oblicz zmianę od baseline (całkowity zysk/strata)
+                    # Oblicz zmianę od baseline
                     change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
                     
-                    # Oblicz zmianę od top (dla trailing stop)
+                    # Oblicz zmianę od top
                     change_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
                     
-                    # ✅ ZAPISUJ current_gain ZA KAŻDYM RAZEM DLA WSZYSTKICH TOKENÓW!
+                    # ZAPISUJ current_gain
                     slot['current_gain'][target_token] = change_from_top
                     
-                    # Aktualizuj max gain
-                    if change_from_top > slot['max_gain'][target_token]:
+                    # BEZPIECZNA AKTUALIZACJA max_gain
+                    if change_from_top > current_max_gain:
                         slot['max_gain'][target_token] = change_from_top
+                        current_max_gain = change_from_top
                     
                     # Sprawdź trailing stop
-                    max_gain = slot['max_gain'][target_token]
                     current_ts = 0.0
                     
-                    # Ustaw trailing stop level na podstawie max gain
                     for gain_threshold, ts_level in self.trailing_stop_levels.items():
-                        if max_gain >= gain_threshold:
+                        if current_max_gain >= gain_threshold:
                             current_ts = ts_level
                     
-                    # Sprawdź warunek trailing stop
                     if current_ts > 0 and change_from_top <= -current_ts:
-                        self.execute_trade(slot_idx, slot, target_token, current_eq, max_gain)
+                        self.execute_trade(slot_idx, slot, target_token, current_eq, current_max_gain)
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """Wykonaj transakcję trailing stop z AUTOMATYCZNYM ZAPISEM"""
-        # ✅ AKTUALIZUJ TOP EQUIVALENT PRZED SWAPEM - jeśli actual > current top
-        current_top = slot['top_equivalent'][target_token]
+        """Wykonaj transakcję trailing stop"""
+        # Aktualizuj top equivalent jeśli current > current top
+        current_top = slot['top_equivalent'].get(target_token, equivalent)
         if equivalent > current_top:
             slot['top_equivalent'][target_token] = equivalent
         
@@ -486,20 +364,15 @@ class CryptoTrailingStopApp:
         slot['token'] = target_token
         slot['quantity'] = equivalent
         
-        # ✅ RESETUJ TYLKO TOP EQUIVALENT DLA NOWEGO TOKENA
-        # ✅ BASELINE NIGDY SIĘ NIE ZMIENIA!
+        # Resetuj tylko top equivalent dla nowego tokena
         for token in self.tokens_to_track:
             if token != target_token:
                 new_eq = self.calculate_equivalent(target_token, token, equivalent)
-                # ❌ NIE resetujemy baseline - on pokazuje historię od początku!
-                # ✅ Tylko top equivalent resetujemy do aktualnej wartości
                 slot['top_equivalent'][token] = new_eq
                 slot['current_gain'][token] = 0.0
                 slot['max_gain'][token] = 0.0
         
         st.session_state.trades.append(trade)
-        
-        # 💾 AUTOMATYCZNY ZAPIS PO KAŻDEJ TRANSAKCJI
         self.save_data()
         
         st.toast(f"🔁 SWAP: {old_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
@@ -510,7 +383,6 @@ class CryptoTrailingStopApp:
         st.session_state.trades = []
         st.session_state.tracking = False
         
-        # Usuń plik danych
         if os.path.exists(self.data_file):
             os.remove(self.data_file)
         
@@ -518,62 +390,48 @@ class CryptoTrailingStopApp:
         st.rerun()
 
     def render_sidebar(self):
-        """Renderuj panel boczny - z informacjami o dostępności tokenów"""
+        """Renderuj panel boczny"""
         with st.sidebar:
             st.title("⚙️ Konfiguracja")
             
-<<<<<<< HEAD
-=======
-            # Pokazuj statystyki dostępności tokenów
-            if hasattr(st.session_state, 'prices') and st.session_state.prices:
-                available_count = len(st.session_state.prices)
-                total_count = len(self.tokens_to_track)
-                st.metric("📊 Dostępne tokeny", f"{available_count}/{total_count}")
+            # Diagnostyka
+            st.subheader("🔍 Diagnostyka")
+            if st.button("🧪 Testuj połączenie z MEXC"):
+                connection_ok, message = self.test_connection()
+                if connection_ok:
+                    st.success(message)
+                else:
+                    st.error(message)
             
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
-            # ✅ NOWA INICJACJA Z USDT
+            # Inicjacja z USDT
             if not st.session_state.portfolio:
                 st.subheader("💰 Inicjacja Portfolio z USDT")
                 usdt_amount = st.number_input("Kwota USDT:", min_value=10.0, value=1000.0, step=100.0)
                 
-<<<<<<< HEAD
-                available_tokens = self.tokens_to_track
-                selected_tokens = st.multiselect(
-                    "Wybierz 5 tokenów:", 
-=======
                 # Pokazuj tylko tokeny, które mają ceny
                 available_tokens = []
                 if hasattr(st.session_state, 'prices'):
                     available_tokens = list(st.session_state.prices.keys())
+                    available_tokens.sort()
                 
                 if not available_tokens:
                     st.error("🚫 Brak dostępnych tokenów. Poczekaj na aktualizację cen.")
-                    return
+                else:
+                    selected_tokens = st.multiselect(
+                        "Wybierz 5 tokenów:", 
+                        available_tokens,
+                        default=available_tokens[:5] if len(available_tokens) >= 5 else available_tokens,
+                        max_selections=5
+                    )
                     
-                # Sortuj tokeny alfabetycznie
-                available_tokens.sort()
-                
-                selected_tokens = st.multiselect(
-                    "Wybierz 5 tokenów (tylko dostępne):", 
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
-                    available_tokens,
-                    default=available_tokens[:5] if len(available_tokens) >= 5 else available_tokens,
-                    max_selections=5
-                )
-                
-<<<<<<< HEAD
-=======
-                # Informacja o dostępnych tokenach
-                st.caption(f"✅ Dostępne tokeny: {len(available_tokens)}")
-                st.caption(f"❌ Brakujące: {len(self.tokens_to_track) - len(available_tokens)}")
-                
->>>>>>> 9e8d16b65bf837b30f028c109d59903b0b1bb921
-                if st.button("🏁 Inicjuj Portfolio", type="primary", use_container_width=True):
-                    if len(selected_tokens) == 5:
-                        self.initialize_portfolio_from_usdt(usdt_amount, selected_tokens)
-                        st.rerun()
-                    else:
-                        st.error("❌ Wybierz dokładnie 5 tokenów")
+                    st.caption(f"✅ Dostępne tokeny: {len(available_tokens)}")
+                    
+                    if st.button("🏁 Inicjuj Portfolio", type="primary", use_container_width=True):
+                        if len(selected_tokens) == 5:
+                            self.initialize_portfolio_from_usdt(usdt_amount, selected_tokens)
+                            st.rerun()
+                        else:
+                            st.error("❌ Wybierz dokładnie 5 tokenów")
             
             # Sterowanie trackingiem
             st.subheader("🎮 Sterowanie")
@@ -612,7 +470,7 @@ class CryptoTrailingStopApp:
             else:
                 st.caption("🚫 Brak danych cenowych")
             
-            # Informacje o danych
+            # Zarządzanie danymi
             st.subheader("💾 Zarządzanie danymi")
             if os.path.exists(self.data_file):
                 file_time = os.path.getmtime(self.data_file)
@@ -623,20 +481,19 @@ class CryptoTrailingStopApp:
                 if st.button("🗑️ Wyczyść wszystkie dane", use_container_width=True):
                     self.clear_all_data()
             
-            # Informacje o trailing stop
+            # Trailing stop info
             st.subheader("🎯 Trailing Stop")
             for gain, stop in self.trailing_stop_levels.items():
                 st.text(f"💰 {gain}% zysk → {stop}% stop")
 
     def render_portfolio_overview(self):
-        """Renderuj przegląd portfolio - BEZ WYKRESÓW"""
+        """Renderuj przegląd portfolio"""
         st.header("📊 Przegląd Portfolio")
         
         if not st.session_state.portfolio:
             st.info("👈 Zainicjuj portfolio z USDT w panelu bocznym")
             return
         
-        # Kafelki portfolio
         cols = st.columns(len(st.session_state.portfolio))
         for idx, (col, slot) in enumerate(zip(cols, st.session_state.portfolio)):
             with col:
@@ -648,25 +505,20 @@ class CryptoTrailingStopApp:
                 )
 
     def render_trailing_matrix(self):
-        """Renderuj macierz trailing stop Z HISTORIĄ PER SLOT"""
+        """Renderuj macierz trailing stop z historią per slot"""
         st.header("🎯 Macierz Trailing Stop")
         
         for slot_idx, slot in enumerate(st.session_state.portfolio):
-            # ✅ POŁĄCZENIE MACIERZY Z HISTORIĄ SLOTU
             self.render_slot_with_history(slot_idx, slot)
 
     def render_slot_with_history(self, slot_idx: int, slot: dict):
-        """✅ NOWA FUNKCJA: Renderuj slot z macierzą i historią"""
+        """Renderuj slot z macierzą i historią"""
         with st.expander(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({slot['quantity']:.4f})", expanded=True):
-            # Macierz slotu
             self.render_slot_matrix(slot_idx, slot)
-            
-            # Historia TYLKO tego slotu
             self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """Renderuj macierz dla pojedynczego slotu - WSZYSTKIE 50 TOKENÓW"""
-        # ✅ WSZYSTKIE 50 TOKENÓW - NAWET AKTUALNY
+        """Renderuj macierz dla pojedynczego slotu"""
         matrix_data = []
         
         for token in self.tokens_to_track:
@@ -679,7 +531,7 @@ class CryptoTrailingStopApp:
             change_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
             change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
             
-            # Określ status kolorowy
+            # Status kolorowy
             if change_top >= -1:
                 status = "🟢"
             elif change_top >= -3:
@@ -687,9 +539,8 @@ class CryptoTrailingStopApp:
             else:
                 status = "🔴"
             
-            # ✅ SPECJALNY STATUS DLA AKTUALNEGO TOKENA
             if token == slot['token']:
-                status = "🔵"  # Niebieski dla aktualnego tokena
+                status = "🔵"
             
             matrix_data.append({
                 'Token': token,
@@ -704,19 +555,17 @@ class CryptoTrailingStopApp:
             })
         
         df = pd.DataFrame(matrix_data)
-        
-        # ✅ WYSOKOŚĆ DOPASOWANA DO 50 WIERSZY
         st.dataframe(df, use_container_width=True, height=800)
 
     def render_slot_trade_history(self, slot_idx: int):
-        """✅ NOWA FUNKCJA: Renderuj historię transakcji dla konkretnego slotu"""
+        """Renderuj historię transakcji dla slotu"""
         slot_trades = [t for t in st.session_state.trades if t['slot'] == slot_idx]
         
         if slot_trades:
             st.subheader(f"📋 Historia Slot {slot_idx + 1}")
             
             history_data = []
-            for trade in slot_trades[-10:]:  # Ostatnie 10 transakcji slotu
+            for trade in slot_trades[-10:]:
                 history_data.append({
                     'Data': trade['timestamp'].strftime('%H:%M:%S'),
                     'Z': trade['from_token'],
@@ -734,24 +583,21 @@ class CryptoTrailingStopApp:
         """Główna pętla aplikacji"""
         self.init_session_state()
         
-        # Nagłówek
         st.title("🚀 Crypto Trailing Stop Matrix - REAL TIME")
         st.markdown("---")
         
-        # Renderuj komponenty
         self.render_sidebar()
         
-        if st.session_state.prices:  # Tylko jeśli mamy ceny
+        if st.session_state.prices:
             self.render_portfolio_overview()
             
             if st.session_state.portfolio:
                 self.render_trailing_matrix()
                 
-                # ✅ AUTOMATYCZNA AKTUALIZACJA CEN CO 1 SEKUNDĘ
                 if st.session_state.tracking:
                     self.update_real_prices()
                     self.check_and_execute_trades()
-                    time.sleep(1)  # ⚡ CO 1 SEKUNDĘ!
+                    time.sleep(1)
                     st.rerun()
         else:
             st.error("🚫 Nie można pobrać cen z MEXC. Sprawdź połączenie.")
