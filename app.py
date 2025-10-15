@@ -29,7 +29,7 @@ class TokenInfo:
 class CryptoTrailingStopApp:
     def __init__(self):
         self.fee_rate = 0.00025
-        self.trailing_stop_levels = {0.5: 0.2, 1.0: 0.5, 2.0: 1.0}
+        self.trailing_stop_levels = {0.5: 0.2, 1.0: 0.5, 2.0: 1.0, 5.0: 2.0}
         self.data_file = "trailing_stop_data.json"
         
         # Lista tokenów - sprawdzone na MEXC
@@ -40,6 +40,14 @@ class CryptoTrailingStopApp:
             'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
             'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
         ]
+        
+    def get_trailing_stop_level(self, max_gain: float) -> float:
+        """Zwraca trailing stop level dla danego max_gain"""
+        current_ts = 0.0
+        for gain_threshold, ts_level in sorted(self.trailing_stop_levels.items()):
+            if max_gain >= gain_threshold:
+                current_ts = ts_level
+        return current_ts
         
     def test_connection(self):
         """Testuj połączenie z MEXC API"""
@@ -298,82 +306,102 @@ class CryptoTrailingStopApp:
             return 0.0
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA"""
+        """Sprawdź warunki trailing stop - PRIORYTET W OBRĘBIE SLOTU"""
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
-            
+        
+        # ✅ ZBIERZ KANDYDATÓW DLA KAŻDEGO SLOTU OSOBNO
+        slot_candidates = {}
+        
         for slot_idx, slot in enumerate(st.session_state.portfolio):
+            swap_candidates = []
             current_tokens = [s['token'] for s in st.session_state.portfolio]
             
+            # ✅ ŚLEDŹ WSZYSTKIE PARY (ale z bezpieczeństwem)
             for target_token in self.tokens_to_track:
-                if target_token != slot['token'] and target_token not in current_tokens:
-                    current_eq = self.calculate_equivalent(
-                        slot['token'], target_token, slot['quantity']
-                    )
+                if target_token != slot['token'] and target_token not in current_tokens:  # ✅ BEZPIECZEŃSTWO
                     
-                    # BEZPIECZNE POBRANIE WARTOŚCI
-                    baseline_eq = slot['baseline'].get(target_token, current_eq)
+                    current_eq = self.calculate_equivalent(slot['token'], target_token, slot['quantity'])
                     current_top = slot['top_equivalent'].get(target_token, current_eq)
                     current_max_gain = slot['max_gain'].get(target_token, 0.0)
                     
-                    # Oblicz zmianę od baseline
-                    change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+                    # Oblicz aktualny gain
+                    current_gain = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
                     
-                    # Oblicz zmianę od top
-                    change_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
+                    # ✅ AKTUALIZUJ max_gain (najwyższa wartość w serii dla tej pary)
+                    if current_gain > current_max_gain:
+                        slot['max_gain'][target_token] = current_gain
+                        current_max_gain = current_gain
                     
-                    # ZAPISUJ current_gain
-                    slot['current_gain'][target_token] = change_from_top
+                    slot['current_gain'][target_token] = current_gain
                     
-                    # BEZPIECZNA AKTUALIZACJA max_gain
-                    if change_from_top > current_max_gain:
-                        slot['max_gain'][target_token] = change_from_top
-                        current_max_gain = change_from_top
-                    
-                    # Sprawdź trailing stop
-                    current_ts = 0.0
-                    
-                    for gain_threshold, ts_level in self.trailing_stop_levels.items():
-                        if current_max_gain >= gain_threshold:
-                            current_ts = ts_level
-                    
-                    # ✅ WARUNEK: trailing stop trigger I actual > current top
-                    if current_ts > 0 and change_from_top <= -current_ts:
-                        # ✅ KRYTYCZNY WARUNEK: current_eq musi być > current_top
-                        if current_eq > current_top:
-                            self.execute_trade(slot_idx, slot, target_token, current_eq, current_max_gain)
-                        else:
-                            # Debug info - pokaż dlaczego swap nie został wykonany
-                            st.warning(f"⏸️ Pominięto swap {slot['token']}→{target_token}: actual ≤ top ({current_eq:.6f} ≤ {current_top:.6f})")
+                    # ✅ SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% (aktywacja trailing stop)
+                    if current_max_gain >= 0.5:
+                        current_ts = self.get_trailing_stop_level(current_max_gain)
+                        
+                        # ✅ SPRAWDŹ WARUNEK SWAPU
+                        if current_gain <= (current_max_gain - current_ts) and current_eq > current_top:
+                            swap_candidates.append({
+                                'target_token': target_token,
+                                'current_eq': current_eq,
+                                'current_gain': current_gain,
+                                'max_gain': current_max_gain,
+                                'trailing_stop': current_ts,
+                                'priority_score': current_max_gain  # ✅ PRIORYTET: najwyższy max_gain
+                            })
+            
+            # ✅ POSORTOWANIE KANDYDATÓW W OBRĘBIE SLOTU
+            if swap_candidates:
+                swap_candidates.sort(key=lambda x: x['priority_score'], reverse=True)
+                slot_candidates[slot_idx] = swap_candidates[0]  # ✅ NAJLEPSZY KANDYDAT DLA SLOTU
+        
+        # ✅ WYKONAJ SWAPY DLA WSZYSTKICH SLOTÓW (każdy slot może wykonać 1 swap)
+        executed_slots = []
+        for slot_idx, candidate in slot_candidates.items():
+            if slot_idx not in executed_slots:
+                slot = st.session_state.portfolio[slot_idx]
+                
+                # ✅ DODATKOWA WERYFIKACJA BEZPIECZEŃSTWA
+                current_tokens = [s['token'] for s in st.session_state.portfolio]
+                if candidate['target_token'] not in current_tokens:
+                    self.execute_trade(
+                        slot_idx, 
+                        slot, 
+                        candidate['target_token'], 
+                        candidate['current_eq'], 
+                        candidate['max_gain']
+                    )
+                    executed_slots.append(slot_idx)
+                    st.success(f"🎯 Slot {slot_idx+1}: WYBRANO {slot['token']}→{candidate['target_token']} (max_gain={candidate['max_gain']:.2f}%)")
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """Wykonaj transakcję trailing stop - AKTUALIZUJ TOP DLA WSZYSTKICH PAR"""
+        """Wykonaj transakcję trailing stop - AKTUALIZUJ TOP TYLKO PRZY SWAPIE"""
         
-        # ✅ 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
+        # ✅ 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par
         updated_tokens = []
         for token in self.tokens_to_track:
             if token != slot['token'] and token not in [s['token'] for s in st.session_state.portfolio]:
                 current_actual = self.calculate_equivalent(slot['token'], token, slot['quantity'])
                 current_top = slot['top_equivalent'].get(token, current_actual)
                 
-                # Jeśli actual > top - aktualizuj top
+                # ✅ TYLKO TUTAJ aktualizujemy top equivalent!
                 if current_actual > current_top:
                     slot['top_equivalent'][token] = current_actual
                     updated_tokens.append(token)
         
         if updated_tokens:
-            st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów: {', '.join(updated_tokens[:5])}")
+            st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów: {', '.join(updated_tokens[:3])}")
         
-        # ✅ 2. WERYFIKACJA: Czy nadal actual > top dla target_token (po aktualizacji)
+        # ✅ 2. FINALNA WERYFIKACJA: Czy nadal actual > top dla target_token
         final_actual = self.calculate_equivalent(slot['token'], target_token, slot['quantity'])
         final_top = slot['top_equivalent'].get(target_token, final_actual)
         
-        # ❌ BEZPIECZNIK: Jeśli actual ≤ top - NIE WYKONUJ SWAPU
+        # ❌ BEZPIECZNIK: Jeśli actual ≤ top - ANULUJ
         if final_actual <= final_top:
-            st.error(f"🚫 SWAP ANULOWANY: {slot['token']}→{target_token} - actual ≤ top po aktualizacji ({final_actual:.6f} ≤ {final_top:.6f})")
+            st.error(f"🚫 SWAP ANULOWANY: {slot['token']}→{target_token} - actual ≤ top ({final_actual:.6f} ≤ {final_top:.6f})")
             return
         
-        # ✅ 3. WYKONAJ SWAP (gwarantowany wzrost akumulacji)
+        # ✅ 3. WYKONAJ SWAP (gwarantowany wzrost)
         trade = {
             'timestamp': datetime.now(),
             'from_token': slot['token'],
@@ -382,7 +410,7 @@ class CryptoTrailingStopApp:
             'to_quantity': equivalent,
             'slot': slot_idx,
             'max_gain': max_gain,
-            'reason': f'Trailing Stop {max_gain:.1f}% - Guaranteed Gain'
+            'reason': f'Trailing Stop {max_gain:.1f}%'
         }
         
         # Aktualizuj slot
@@ -390,7 +418,7 @@ class CryptoTrailingStopApp:
         slot['token'] = target_token
         slot['quantity'] = equivalent
         
-        # ✅ 4. PO SWAPIE: Resetuj top equivalent dla nowego tokena (top = actual po swapie)
+        # ✅ 4. PO SWAPIE: Resetuj top equivalent dla nowego tokena
         for token in self.tokens_to_track:
             if token != target_token:
                 new_actual = self.calculate_equivalent(target_token, token, equivalent)
@@ -512,7 +540,7 @@ class CryptoTrailingStopApp:
             
             # Trailing stop info
             st.subheader("🎯 Trailing Stop")
-            for gain, stop in self.trailing_stop_levels.items():
+            for gain, stop in sorted(self.trailing_stop_levels.items()):
                 st.text(f"💰 {gain}% zysk → {stop}% stop")
 
     def render_portfolio_overview(self):
@@ -547,8 +575,17 @@ class CryptoTrailingStopApp:
             self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """Renderuj macierz dla pojedynczego slotu"""
+        """Renderuj macierz dla pojedynczego slotu z oznaczeniem najlepszej pary"""
         matrix_data = []
+        best_pair_gain = -999
+        best_pair_token = None
+        
+        # Znajdź najlepszą parę dla tego slotu
+        for token in self.tokens_to_track:
+            current_max_gain = slot['max_gain'].get(token, 0.0)
+            if current_max_gain > best_pair_gain:
+                best_pair_gain = current_max_gain
+                best_pair_token = token
         
         for token in self.tokens_to_track:
             current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
@@ -560,16 +597,12 @@ class CryptoTrailingStopApp:
             change_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
             change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
             
-            # Status kolorowy
-            if change_top >= -1:
-                status = "🟢"
-            elif change_top >= -3:
-                status = "🟡" 
-            else:
-                status = "🔴"
-            
+            # ✅ OZNACZENIE STATUSU Z NAJLEPSZĄ PARĄ
+            status = "🟢" if change_top >= -1 else "🟡" if change_top >= -3 else "🔴"
             if token == slot['token']:
                 status = "🔵"
+            elif token == best_pair_token and best_pair_gain >= 0.5:
+                status = "⭐"  # ✅ NAJLEPSZA PARA!
             
             matrix_data.append({
                 'Token': token,
