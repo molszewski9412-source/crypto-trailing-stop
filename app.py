@@ -46,53 +46,63 @@ class CryptoTrailingStopApp:
         ]
         
     def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
-        """Pobierz WSZYSTKIE ceny bid/ask z MEXC w JEDNYM zapytaniu - BEZ FALLBACK"""
-        prices = {}
-        problematic_tokens = []
+    """Pobierz ceny z MEXC - Z DIAGNOSTYKĄ I ELASTYCZNOŚCIĄ"""
+    prices = {}
+    
+    try:
+        # Bulk endpoint MEXC
+        url = "https://api.mexc.com/api/v3/ticker/bookTicker"
         
-        try:
-            # Bulk endpoint MEXC - pobiera wszystkie pary
-            url = "https://api.mexc.com/api/v3/ticker/bookTicker"
+        st.info("🔄 Łączenie z MEXC API...")
+        response = requests.get(url, timeout=15)
+        
+        if response.status_code == 200:
+            all_data = response.json()
+            st.success(f"✅ Pobrano dane dla {len(all_data)} par")
             
-            response = requests.get(url, timeout=10)
+            # Filtruj pary USDT
+            usdt_pairs = {item['symbol']: item for item in all_data 
+                         if item['symbol'].endswith('USDT')}
             
-            if response.status_code == 200:
-                all_data = response.json()
-                
-                # Filtruj tylko pary USDT które nas interesują
-                usdt_pairs = {item['symbol']: item for item in all_data 
-                             if item['symbol'].endswith('USDT')}
-                
-                for token in self.tokens_to_track:
-                    symbol = f"{token}USDT"
-                    if symbol in usdt_pairs:
-                        data = usdt_pairs[symbol]
-                        bid_price = float(data['bidPrice'])
-                        ask_price = float(data['askPrice'])
-                        
-                        prices[token] = TokenInfo(
-                            symbol=token,
-                            bid_price=bid_price,
-                            ask_price=ask_price,
-                            last_update=datetime.now()
-                        )
-                    else:
-                        problematic_tokens.append(token)
-                
-                if problematic_tokens:
-                    st.error(f"❌ Brak par dla tokenów: {', '.join(problematic_tokens)}")
-                    # Nie zwracaj żadnych cen jeśli są problemy
-                    return {}
+            found_tokens = 0
+            problematic_tokens = []
+            
+            for token in self.tokens_to_track:
+                symbol = f"{token}USDT"
+                if symbol in usdt_pairs:
+                    data = usdt_pairs[symbol]
+                    bid_price = float(data['bidPrice'])
+                    ask_price = float(data['askPrice'])
                     
-            else:
-                st.error(f"❌ Błąd API MEXC: {response.status_code}")
-                return {}
-                
-        except Exception as e:
-            st.error(f"❌ Błąd połączenia z MEXC: {e}")
+                    prices[token] = TokenInfo(
+                        symbol=token,
+                        bid_price=bid_price,
+                        ask_price=ask_price,
+                        last_update=datetime.now()
+                    )
+                    found_tokens += 1
+                else:
+                    problematic_tokens.append(token)
+            
+            if problematic_tokens:
+                st.warning(f"⚠️ Brak par dla {len(problematic_tokens)} tokenów: {', '.join(problematic_tokens[:10])}")
+            
+            st.success(f"✅ Znaleziono ceny dla {found_tokens}/50 tokenów")
+            return prices
+            
+        else:
+            st.error(f"❌ Błąd HTTP {response.status_code} od MEXC API")
             return {}
-        
-        return prices
+            
+    except requests.exceptions.Timeout:
+        st.error("⏰ Timeout - MEXC API nie odpowiada")
+        return {}
+    except requests.exceptions.ConnectionError:
+        st.error("🌐 Błąd połączenia - sprawdź internet")
+        return {}
+    except Exception as e:
+        st.error(f"❌ Nieoczekiwany błąd: {e}")
+        return {}
 
     def get_initial_prices(self) -> Dict[str, TokenInfo]:
         """Pobierz początkowe ceny - TYLKO REALNE z MEXC"""
