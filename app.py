@@ -298,113 +298,113 @@ class CryptoTrailingStopApp:
             return 0.0
 
     def check_and_execute_trades(self):
-    """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA"""
-    if not st.session_state.tracking or not st.session_state.portfolio:
-        return
-        
-    for slot_idx, slot in enumerate(st.session_state.portfolio):
-        current_tokens = [s['token'] for s in st.session_state.portfolio]
-        
-        for target_token in self.tokens_to_track:
-            if target_token != slot['token'] and target_token not in current_tokens:
-                current_eq = self.calculate_equivalent(
-                    slot['token'], target_token, slot['quantity']
-                )
-                
-                # BEZPIECZNE POBRANIE WARTOŚCI
-                baseline_eq = slot['baseline'].get(target_token, current_eq)
-                current_top = slot['top_equivalent'].get(target_token, current_eq)
-                current_max_gain = slot['max_gain'].get(target_token, 0.0)
-                
-                # Oblicz zmianę od baseline
-                change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                
-                # Oblicz zmianę od top
-                change_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
-                
-                # ZAPISUJ current_gain
-                slot['current_gain'][target_token] = change_from_top
-                
-                # BEZPIECZNA AKTUALIZACJA max_gain
-                if change_from_top > current_max_gain:
-                    slot['max_gain'][target_token] = change_from_top
-                    current_max_gain = change_from_top
-                
-                # Sprawdź trailing stop
-                current_ts = 0.0
-                
-                for gain_threshold, ts_level in self.trailing_stop_levels.items():
-                    if current_max_gain >= gain_threshold:
-                        current_ts = ts_level
-                
-                # ✅ WARUNEK: trailing stop trigger I actual > current top
-                if current_ts > 0 and change_from_top <= -current_ts:
-                    # ✅ KRYTYCZNY WARUNEK: current_eq musi być > current_top
-                    if current_eq > current_top:
-                        self.execute_trade(slot_idx, slot, target_token, current_eq, current_max_gain)
-                    else:
-                        # Debug info - pokaż dlaczego swap nie został wykonany
-                        st.warning(f"⏸️ Pominięto swap {slot['token']}→{target_token}: actual ≤ top ({current_eq:.6f} ≤ {current_top:.6f})")
-
-def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-    """Wykonaj transakcję trailing stop - AKTUALIZUJ TOP DLA WSZYSTKICH PAR"""
-    
-    # ✅ 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
-    updated_tokens = []
-    for token in self.tokens_to_track:
-        if token != slot['token'] and token not in [s['token'] for s in st.session_state.portfolio]:
-            current_actual = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-            current_top = slot['top_equivalent'].get(token, current_actual)
+        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA"""
+        if not st.session_state.tracking or not st.session_state.portfolio:
+            return
             
-            # Jeśli actual > top - aktualizuj top
-            if current_actual > current_top:
-                slot['top_equivalent'][token] = current_actual
-                updated_tokens.append(token)
-    
-    if updated_tokens:
-        st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów: {', '.join(updated_tokens[:5])}")
-    
-    # ✅ 2. WERYFIKACJA: Czy nadal actual > top dla target_token (po aktualizacji)
-    final_actual = self.calculate_equivalent(slot['token'], target_token, slot['quantity'])
-    final_top = slot['top_equivalent'].get(target_token, final_actual)
-    
-    # ❌ BEZPIECZNIK: Jeśli actual ≤ top - NIE WYKONUJ SWAPU
-    if final_actual <= final_top:
-        st.error(f"🚫 SWAP ANULOWANY: {slot['token']}→{target_token} - actual ≤ top po aktualizacji ({final_actual:.6f} ≤ {final_top:.6f})")
-        return
-    
-    # ✅ 3. WYKONAJ SWAP (gwarantowany wzrost akumulacji)
-    trade = {
-        'timestamp': datetime.now(),
-        'from_token': slot['token'],
-        'to_token': target_token,
-        'from_quantity': slot['quantity'],
-        'to_quantity': equivalent,
-        'slot': slot_idx,
-        'max_gain': max_gain,
-        'reason': f'Trailing Stop {max_gain:.1f}% - Guaranteed Gain'
-    }
-    
-    # Aktualizuj slot
-    old_token = slot['token']
-    slot['token'] = target_token
-    slot['quantity'] = equivalent
-    
-    # ✅ 4. PO SWAPIE: Resetuj top equivalent dla nowego tokena (top = actual po swapie)
-    for token in self.tokens_to_track:
-        if token != target_token:
-            new_actual = self.calculate_equivalent(target_token, token, equivalent)
-            slot['top_equivalent'][token] = new_actual  # Top = actual po swapie
-            slot['current_gain'][token] = 0.0
-            slot['max_gain'][token] = 0.0
-    
-    st.session_state.trades.append(trade)
-    self.save_data()
-    
-    # ✅ 5. POTWIERDZENIE WZROSTU
-    growth_percentage = ((equivalent - final_top) / final_top * 100) if final_top > 0 else 0
-    st.toast(f"🔁 SWAP: {old_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
-    st.success(f"💰 GWARANTOWANY WZROST: +{growth_percentage:+.3f}% od poprzedniego top")
+        for slot_idx, slot in enumerate(st.session_state.portfolio):
+            current_tokens = [s['token'] for s in st.session_state.portfolio]
+            
+            for target_token in self.tokens_to_track:
+                if target_token != slot['token'] and target_token not in current_tokens:
+                    current_eq = self.calculate_equivalent(
+                        slot['token'], target_token, slot['quantity']
+                    )
+                    
+                    # BEZPIECZNE POBRANIE WARTOŚCI
+                    baseline_eq = slot['baseline'].get(target_token, current_eq)
+                    current_top = slot['top_equivalent'].get(target_token, current_eq)
+                    current_max_gain = slot['max_gain'].get(target_token, 0.0)
+                    
+                    # Oblicz zmianę od baseline
+                    change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+                    
+                    # Oblicz zmianę od top
+                    change_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
+                    
+                    # ZAPISUJ current_gain
+                    slot['current_gain'][target_token] = change_from_top
+                    
+                    # BEZPIECZNA AKTUALIZACJA max_gain
+                    if change_from_top > current_max_gain:
+                        slot['max_gain'][target_token] = change_from_top
+                        current_max_gain = change_from_top
+                    
+                    # Sprawdź trailing stop
+                    current_ts = 0.0
+                    
+                    for gain_threshold, ts_level in self.trailing_stop_levels.items():
+                        if current_max_gain >= gain_threshold:
+                            current_ts = ts_level
+                    
+                    # ✅ WARUNEK: trailing stop trigger I actual > current top
+                    if current_ts > 0 and change_from_top <= -current_ts:
+                        # ✅ KRYTYCZNY WARUNEK: current_eq musi być > current_top
+                        if current_eq > current_top:
+                            self.execute_trade(slot_idx, slot, target_token, current_eq, current_max_gain)
+                        else:
+                            # Debug info - pokaż dlaczego swap nie został wykonany
+                            st.warning(f"⏸️ Pominięto swap {slot['token']}→{target_token}: actual ≤ top ({current_eq:.6f} ≤ {current_top:.6f})")
+
+    def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
+        """Wykonaj transakcję trailing stop - AKTUALIZUJ TOP DLA WSZYSTKICH PAR"""
+        
+        # ✅ 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
+        updated_tokens = []
+        for token in self.tokens_to_track:
+            if token != slot['token'] and token not in [s['token'] for s in st.session_state.portfolio]:
+                current_actual = self.calculate_equivalent(slot['token'], token, slot['quantity'])
+                current_top = slot['top_equivalent'].get(token, current_actual)
+                
+                # Jeśli actual > top - aktualizuj top
+                if current_actual > current_top:
+                    slot['top_equivalent'][token] = current_actual
+                    updated_tokens.append(token)
+        
+        if updated_tokens:
+            st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów: {', '.join(updated_tokens[:5])}")
+        
+        # ✅ 2. WERYFIKACJA: Czy nadal actual > top dla target_token (po aktualizacji)
+        final_actual = self.calculate_equivalent(slot['token'], target_token, slot['quantity'])
+        final_top = slot['top_equivalent'].get(target_token, final_actual)
+        
+        # ❌ BEZPIECZNIK: Jeśli actual ≤ top - NIE WYKONUJ SWAPU
+        if final_actual <= final_top:
+            st.error(f"🚫 SWAP ANULOWANY: {slot['token']}→{target_token} - actual ≤ top po aktualizacji ({final_actual:.6f} ≤ {final_top:.6f})")
+            return
+        
+        # ✅ 3. WYKONAJ SWAP (gwarantowany wzrost akumulacji)
+        trade = {
+            'timestamp': datetime.now(),
+            'from_token': slot['token'],
+            'to_token': target_token,
+            'from_quantity': slot['quantity'],
+            'to_quantity': equivalent,
+            'slot': slot_idx,
+            'max_gain': max_gain,
+            'reason': f'Trailing Stop {max_gain:.1f}% - Guaranteed Gain'
+        }
+        
+        # Aktualizuj slot
+        old_token = slot['token']
+        slot['token'] = target_token
+        slot['quantity'] = equivalent
+        
+        # ✅ 4. PO SWAPIE: Resetuj top equivalent dla nowego tokena (top = actual po swapie)
+        for token in self.tokens_to_track:
+            if token != target_token:
+                new_actual = self.calculate_equivalent(target_token, token, equivalent)
+                slot['top_equivalent'][token] = new_actual  # Top = actual po swapie
+                slot['current_gain'][token] = 0.0
+                slot['max_gain'][token] = 0.0
+        
+        st.session_state.trades.append(trade)
+        self.save_data()
+        
+        # ✅ 5. POTWIERDZENIE WZROSTU
+        growth_percentage = ((equivalent - final_top) / final_top * 100) if final_top > 0 else 0
+        st.toast(f"🔁 SWAP: {old_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
+        st.success(f"💰 GWARANTOWANY WZROST: +{growth_percentage:+.3f}% od poprzedniego top")
 
     def clear_all_data(self):
         """Wyczyść wszystkie dane"""
