@@ -36,13 +36,13 @@ class CryptoTrailingStopApp:
         }
         self.data_file = "trailing_stop_data.json"
         
-        # ✅ ZAKTUALIZOWANA LISTA TOKENÓW KTÓRE ISTNIEJĄ NA MEXC
+        # ✅ ZAKTUALIZOWANA LISTA TOKENÓW - WSZYSTKIE DZIAŁAJĄCE NA MEXC
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
             'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
             'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'INF', 'POL', 'ARB', 'OP', 'APT', 'SUI', 'SEI'
+            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RNDR'
         ]
         
     def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
