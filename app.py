@@ -42,7 +42,7 @@ class CryptoTrailingStopApp:
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
             'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
             'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'FTM', 'MATIC', 'ARB', 'OP', 'APT', 'SUI', 'SEI'
+            'CHZ', 'ALICE', 'NEAR', 'INF', 'POL', 'ARB', 'OP', 'APT', 'SUI', 'SEI'
         ]
         
     def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
