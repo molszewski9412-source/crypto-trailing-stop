@@ -193,7 +193,7 @@ class CryptoTrailingStopApp:
                 if target_token in st.session_state.prices:
                     equivalent = self.calculate_equivalent(token, target_token, quantity)
                     baseline[target_token] = equivalent
-                    top_equivalent[target_token] = equivalent
+                    top_equivalent[target_token] = equivalent  # Na początku top = baseline
                     current_gain[target_token] = 0.0
                     max_gain[target_token] = 0.0
             
@@ -320,69 +320,73 @@ class CryptoTrailingStopApp:
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
         
-        # ✅ ZBIERZ KANDYDATÓW DLA KAŻDEGO SLOTU OSOBNO
+        # ZBIERZ KANDYDATÓW DLA KAŻDEGO SLOTU OSOBNO
         slot_candidates = {}
         
         for slot_idx, slot in enumerate(st.session_state.portfolio):
             swap_candidates = []
             current_tokens = [s['token'] for s in st.session_state.portfolio]
             
-            # ✅ ŚLEDŹ WSZYSTKIE PARY (ale z bezpieczeństwem)
+            # ŚLEDŹ WSZYSTKIE PARY (ale z bezpieczeństwem)
             for target_token in self.tokens_to_track:
                 if target_token != slot['token'] and target_token not in current_tokens:
                     
                     current_eq = self.calculate_equivalent(slot['token'], target_token, slot['quantity'])
+                    baseline_eq = slot['baseline'].get(target_token, current_eq)
                     current_top = slot['top_equivalent'].get(target_token, current_eq)
                     current_max_gain = slot['max_gain'].get(target_token, 0.0)
                     
-                    # ✅ AKTUALIZUJ TOP EQUIVALENT NA BIEŻĄCO - KLUCZOWA ZMIANA!
+                    # ✅ POPRAWNE OBLICZENIE ZYSKU OD BASELINE
+                    gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+                    
+                    # ✅ POPRAWNE OBLICZENIE ZYSKU OD TOP
+                    gain_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
+                    
+                    # ✅ AKTUALIZACJA TOP EQUIVALENT - tylko gdy current_eq > current_top
                     if current_eq > current_top:
                         slot['top_equivalent'][target_token] = current_eq
                         current_top = current_eq
-                        # Resetuj max_gain gdy nowy top
-                        current_max_gain = 0.0
-                        slot['max_gain'][target_token] = 0.0
+                        # Przy nowym top, zysk od top resetuje się do 0
+                        gain_from_top = 0.0
                     
-                    # Oblicz aktualny gain
-                    current_gain = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
+                    # ✅ AKTUALIZACJA MAX GAIN - najwyższy zysk od baseline
+                    if gain_from_baseline > current_max_gain:
+                        slot['max_gain'][target_token] = gain_from_baseline
+                        current_max_gain = gain_from_baseline
                     
-                    # ✅ POPRAWNA AKTUALIZACJA max_gain
-                    if current_gain > current_max_gain:
-                        slot['max_gain'][target_token] = current_gain
-                        current_max_gain = current_gain
+                    # Zapisz current_gain jako zysk od baseline (dla wyświetlania)
+                    slot['current_gain'][target_token] = gain_from_baseline
                     
-                    slot['current_gain'][target_token] = current_gain
-                    
-                    # ✅ SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% (aktywacja trailing stop)
+                    # SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% (aktywacja trailing stop)
                     if current_max_gain >= 0.5:
                         current_ts = self.get_trailing_stop_level(current_max_gain)
                         
-                        # ✅ POPRAWNY WARUNEK SWAPU
-                        if current_gain <= -current_ts:  # Spadek o trailing stop od max_gain
+                        # ✅ POPRAWNY WARUNEK SWAPU: spadek o trailing stop od max_gain
+                        if gain_from_baseline <= (current_max_gain - current_ts):
                             swap_candidates.append({
                                 'target_token': target_token,
                                 'current_eq': current_eq,
-                                'current_gain': current_gain,
+                                'current_gain': gain_from_baseline,
                                 'max_gain': current_max_gain,
                                 'trailing_stop': current_ts,
-                                'priority_score': current_max_gain  # ✅ PRIORYTET: najwyższy max_gain
+                                'priority_score': current_max_gain
                             })
                             
-                            # ✅ DEBUG: Pokazuj pary które spełniają warunek
-                            st.sidebar.info(f"🎯 Slot {slot_idx+1}: {slot['token']}→{target_token} gain: {current_gain:.2f}% (max: {current_max_gain:.2f}%, ts: {current_ts:.2f}%)")
+                            # DEBUG: Pokazuj pary które spełniają warunek
+                            st.sidebar.info(f"🎯 Slot {slot_idx+1}: {slot['token']}→{target_token} gain: {gain_from_baseline:.2f}% (max: {current_max_gain:.2f}%, ts: {current_ts:.2f}%)")
             
-            # ✅ POSORTOWANIE KANDYDATÓW W OBRĘBIE SLOTU
+            # POSORTOWANIE KANDYDATÓW W OBRĘBIE SLOTU
             if swap_candidates:
                 swap_candidates.sort(key=lambda x: x['priority_score'], reverse=True)
-                slot_candidates[slot_idx] = swap_candidates[0]  # ✅ NAJLEPSZY KANDYDAT DLA SLOTU
+                slot_candidates[slot_idx] = swap_candidates[0]
         
-        # ✅ WYKONAJ SWAPY DLA WSZYSTKICH SLOTÓW (każdy slot może wykonać 1 swap)
+        # WYKONAJ SWAPY DLA WSZYSTKICH SLOTÓW
         executed_slots = []
         for slot_idx, candidate in slot_candidates.items():
             if slot_idx not in executed_slots:
                 slot = st.session_state.portfolio[slot_idx]
                 
-                # ✅ DODATKOWA WERYFIKACJA BEZPIECZEŃSTWA
+                # DODATKOWA WERYFIKACJA BEZPIECZEŃSTWA
                 current_tokens = [s['token'] for s in st.session_state.portfolio]
                 if candidate['target_token'] not in current_tokens:
                     self.execute_trade(
@@ -397,7 +401,7 @@ class CryptoTrailingStopApp:
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
         """Wykonaj transakcję trailing stop"""
         
-        # ✅ 1. WYKONAJ SWAP
+        # 1. WYKONAJ SWAP
         trade = {
             'timestamp': datetime.now(),
             'from_token': slot['token'],
@@ -414,10 +418,11 @@ class CryptoTrailingStopApp:
         slot['token'] = target_token
         slot['quantity'] = equivalent
         
-        # ✅ 2. PO SWAPIE: Resetuj top equivalent dla nowego tokena
+        # 2. PO SWAPIE: Resetuj dane dla nowego tokena
         for token in self.tokens_to_track:
             if token != target_token:
                 new_actual = self.calculate_equivalent(target_token, token, equivalent)
+                slot['baseline'][token] = new_actual
                 slot['top_equivalent'][token] = new_actual
                 slot['current_gain'][token] = 0.0
                 slot['max_gain'][token] = 0.0
@@ -425,7 +430,7 @@ class CryptoTrailingStopApp:
         st.session_state.trades.append(trade)
         self.save_data()
         
-        # ✅ 3. POTWIERDZENIE SWAPU
+        # 3. POTWIERDZENIE SWAPU
         st.toast(f"🔁 SWAP: {old_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
         st.success(f"💰 WYKONANO SWAP: {old_token} → {target_token} | Max Gain: {max_gain:.2f}%")
 
@@ -600,27 +605,32 @@ class CryptoTrailingStopApp:
             current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
             baseline_eq = slot['baseline'].get(token, current_eq)
             top_eq = slot['top_equivalent'].get(token, current_eq)
-            current_gain = slot['current_gain'].get(token, 0.0)
+            current_gain_baseline = slot['current_gain'].get(token, 0.0)
             max_gain = slot['max_gain'].get(token, 0.0)
             
-            change_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-            change_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
+            # ✅ POPRAWNE OBLICZENIA PROCENTOWE
+            change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+            change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
             
-            # ✅ OZNACZENIE STATUSU Z NAJLEPSZĄ PARĄ
-            status = "🟢" if change_top >= -1 else "🟡" if change_top >= -3 else "🔴"
+            # ✅ WERYFIKACJA SPÓJNOŚCI DANYCH
+            if abs(change_from_baseline - current_gain_baseline) > 0.01:  # Tolerancja 0.01%
+                st.warning(f"⚠️ Niespójność danych: {slot['token']}→{token} baseline: {change_from_baseline:.2f}% vs saved: {current_gain_baseline:.2f}%")
+            
+            # Status kolorowy
+            status = "🟢" if change_from_top >= -1 else "🟡" if change_from_top >= -3 else "🔴"
             if token == slot['token']:
                 status = "🔵"
             elif token == best_pair_token and best_pair_gain >= 0.5:
-                status = "⭐"  # ✅ NAJLEPSZA PARA!
+                status = "⭐"  # NAJLEPSZA PARA!
             
             matrix_data.append({
                 'Token': token,
                 'Aktualny': f"{current_eq:.6f}",
                 'Początkowy': f"{baseline_eq:.6f}",
-                'Δ Od początku': f"{change_baseline:+.2f}%",
+                'Δ Od początku': f"{change_from_baseline:+.2f}%",
                 'Top': f"{top_eq:.6f}",
-                'Δ Od top': f"{change_top:+.2f}%",
-                'Current Gain': f"{current_gain:+.2f}%",
+                'Δ Od top': f"{change_from_top:+.2f}%",
+                'Current Gain': f"{current_gain_baseline:+.2f}%",
                 'Max Wzrost': f"{max_gain:+.2f}%",
                 'Status': status
             })
@@ -668,12 +678,12 @@ class CryptoTrailingStopApp:
             st.title("🚀 Crypto Trailing Stop Matrix - 24/7")
             st.markdown("---")
             
-            # ✅ STATUS AKTYWNOŚCI
+            # STATUS AKTYWNOŚCI
             self.keep_app_alive()
             
             self.render_sidebar()
             
-            # ✅ AUTOMATYCZNE URUCHOMIENIE ŚLEDZENIA
+            # AUTOMATYCZNE URUCHOMIENIE ŚLEDZENIA
             if st.session_state.portfolio and not st.session_state.tracking:
                 with st.sidebar:
                     if st.button("▶ Auto-start śledzenia", type="primary", use_container_width=True):
@@ -687,25 +697,25 @@ class CryptoTrailingStopApp:
                     self.render_trailing_matrix()
                     
                     if st.session_state.tracking:
-                        # ✅ POKAŻ STATUS ŚLEDZENIA
+                        # POKAŻ STATUS ŚLEDZENIA
                         st.success(f"🟢 ŚLEDZENIE AKTYWNE | Ostatnia aktualizacja: {datetime.now().strftime('%H:%M:%S')}")
                         
                         self.update_real_prices()
                         self.check_and_execute_trades()
                         
-                        # ✅ OPTYMALNY DELAY 3 SEKUNDY
+                        # OPTYMALNY DELAY 3 SEKUNDY
                         time.sleep(3)
                         st.rerun()
             else:
                 st.error("🚫 Brak danych cenowych")
-                # ✅ AUTOMATYCZNA PONOWNA PRÓBA
+                # AUTOMATYCZNA PONOWNA PRÓBA
                 if st.button("🔄 Pobierz ceny ponownie") or st.session_state.tracking:
                     st.session_state.prices = self.get_initial_prices()
                     time.sleep(2)
                     st.rerun()
                     
         except Exception as e:
-            # ✅ OBSŁUGA BŁĘDÓW Z AUTO-RESTARTEM
+            # OBSŁUGA BŁĘDÓW Z AUTO-RESTARTEM
             st.error(f"🔴 Krytyczny błąd: {e}")
             st.info("🔄 Automatyczny restart za 10 sekund...")
             time.sleep(10)
