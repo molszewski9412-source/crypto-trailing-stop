@@ -306,7 +306,7 @@ class CryptoTrailingStopApp:
             return 0.0
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA DYNAMICZNEGO TRAILING STOP"""
+        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA"""
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
         
@@ -324,32 +324,32 @@ class CryptoTrailingStopApp:
                     current_top = slot['top_equivalent'].get(target_token, current_eq)
                     current_max_gain = slot['max_gain'].get(target_token, 0.0)
                     
-                    # Oblicz gain od baseline (globalny wzrost akumulacji)
+                    # ✅ OBLICZENIE GLOBALNEGO WZROSTU OD BASELINE
                     gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
                     
-                    # Oblicz gain od top (dla trailing stop)
+                    # ✅ OBLICZENIE ZMIANY OD TOP (dla trailing stop)
                     gain_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
                     
-                    # Aktualizuj top equivalent jeśli current > top
+                    # ✅ AKTUALIZACJA TOP EQUIVALENT - tylko gdy current > top
                     if current_eq > current_top:
                         slot['top_equivalent'][target_token] = current_eq
                         current_top = current_eq
-                        gain_from_top = 0.0  # Reset gain od top przy nowym top
+                        # Resetujemy gain_from_top do 0, bo top się przesunął
+                        gain_from_top = 0.0
                     
-                    # ✅ POPRAWNA AKTUALIZACJA MAX GAIN - dynamiczny trailing stop
-                    # Max gain to najwyższy gain od top od osiągnięcia 0.5%
+                    # ✅ AKTUALIZACJA MAX GAIN - najwyższy gain od top
                     if gain_from_top > current_max_gain:
                         slot['max_gain'][target_token] = gain_from_top
                         current_max_gain = gain_from_top
                     
-                    slot['current_gain'][target_token] = gain_from_top
+                    # ✅ ZAPISUJEMY CURRENT_GAIN JAKO GLOBALNY WZROST OD BASELINE
+                    slot['current_gain'][target_token] = gain_from_baseline
                     
-                    # Sprawdź czy para osiągnęła 0.5% gain od top (aktywacja trailing stop)
+                    # SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% gain od top (aktywacja trailing stop)
                     if current_max_gain >= 0.5:
                         current_ts = self.get_trailing_stop_level(current_max_gain)
                         
-                        # ✅ POPRAWNY WARUNEK SWAPU: spadek o trailing stop od max gain
-                        # Np. przy max_gain=3.2% i ts=1.0%, swap przy gain_from_top <= 2.2%
+                        # ✅ WARUNEK SWAPU: spadek o trailing stop od max gain
                         swap_threshold = current_max_gain - current_ts
                         if gain_from_top <= swap_threshold:
                             swap_candidates.append({
