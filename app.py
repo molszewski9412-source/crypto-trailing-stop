@@ -411,56 +411,31 @@ class CryptoTrailingStopApp:
         self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """
-        Render matrix for a single slot.
-        Wyświetla pełną macierz tokenów i ich aktualne oraz top ekwiwalenty.
-
-        Zmiany:
-        - Użyto st.table() zamiast st.dataframe, aby uniknąć przewijania.
-        - Pokazuje absolutne wartości, delta od początkowego i od top.
-        - Status wskazuje token własny, najlepszy kandydat i kolory w zależności od zmiany.
-        """
         matrix_data = []
         best_pair_gain = -999.0
         best_pair_token = None
 
-        # Szukamy tokenu z najwyższym max_gain
-        for token in self.tokens_to_track:
-            current_max_gain = slot.get('max_gain', {}).get(token, 0.0)
-            if current_max_gain > best_pair_gain:
-                best_pair_gain = current_max_gain
-                best_pair_token = token
+        prices = st.session_state.prices
+        tokens = self.tokens_to_track
 
-        # Budujemy wiersze tabeli
-        for token in self.tokens_to_track:
+        # Dynamiczna aktualizacja current_gain i max_gain
+        for token in tokens:
             current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-            try:
-                current_eq = float(current_eq)
-            except:
-                current_eq = 0.0
             baseline_eq = slot.get('baseline', {}).get(token, current_eq)
-            try:
-                baseline_eq = float(baseline_eq)
-            except:
-                baseline_eq = 0.0
             top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
-            try:
-                top_eq = float(top_eq)
-            except:
-                top_eq = 0.0
-
-            current_gain = slot.get('current_gain', {}).get(token, 0.0)
-            max_gain = slot.get('max_gain', {}).get(token, 0.0)
 
             change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0.0
             change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0.0
 
-            # Status wizualny: własny token, najlepszy kandydat lub kolory zmiany
-            status = "🟢" if change_from_top >= -1 else "🟡" if change_from_top >= -3 else "🔴"
-            if token == slot['token']:
-                status = "🔵"
-            elif token == best_pair_token and best_pair_gain >= 0.5:
-                status = "⭐"
+            # Aktualizacja bieżącego i maksymalnego gain
+            slot['current_gain'][token] = change_from_baseline
+            prev_max = slot['max_gain'].get(token, 0.0)
+            slot['max_gain'][token] = max(prev_max, change_from_baseline)
+
+            # Najlepszy kandydat do swapu
+            if slot['max_gain'][token] > best_pair_gain:
+                best_pair_gain = slot['max_gain'][token]
+                best_pair_token = token
 
             matrix_data.append({
                 'Token': token,
@@ -469,14 +444,16 @@ class CryptoTrailingStopApp:
                 'Δ Od początku': f"{change_from_baseline:+.2f}%",
                 'Top': f"{top_eq:.6f}",
                 'Δ Od top': f"{change_from_top:+.2f}%",
-                'Current Gain': f"{current_gain:+.2f}%",
-                'Max Wzrost': f"{max_gain:+.2f}%",
-                'Status': status
+                'Current Gain': f"{slot['current_gain'][token]:+.2f}%",
+                'Max Wzrost': f"{slot['max_gain'][token]:+.2f}%",
+                'Status': "🔵" if token==slot['token'] else "⭐" if token==best_pair_token and best_pair_gain>=0.5 else "🟢"
             })
 
         df = pd.DataFrame(matrix_data)
 
-        # Wyświetlamy pełną macierz bez przewijania
+        # Sortowanie po kolumnie 'Max Wzrost' malejąco, bez przewijania
+        df = df.sort_values(by='Max Wzrost', ascending=False).reset_index(drop=True)
+
         st.table(df)
 
     def render_slot_trade_history(self, idx):
