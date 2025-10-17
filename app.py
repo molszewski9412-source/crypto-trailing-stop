@@ -269,36 +269,63 @@ class CryptoTrailingStopApp:
             self.execute_trade(idx, slot, target, candidate['current_eq'], candidate['max_gain'])
             executed_targets.add(target)
 
-    def execute_trade(self, idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
+    def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
+        """
+        Wykonuje swap pełnego slotu.
+        1. Oblicza dokładną ilość target_token uzyskaną w swapie.
+        2. Aktualizuje top_equivalent dla swapowanego tokenu dokładnie jako uzyskana ilość.
+        3. Dla pozostałych tokenów przelicza top_equivalent względem nowego tokenu i jego ilości.
+        4. Resetuje current_gain i max_gain tylko dla tokenów innych niż swapowany.
+        5. Zapisuje trade w historii.
+        """
+
         from_token = slot['token']
         from_qty = slot['quantity']
+
+        # Dokładna ilość uzyskana w swapie (uwzględnia fee)
         to_qty = self.calculate_equivalent(from_token, target_token, from_qty)
         if to_qty <= 0:
-            st.warning("⚠️ Swap aborted: to_qty <= 0")
+            st.warning("⚠️ Swap aborted: computed to_qty <= 0")
             return
+
+        # Zapis trade przed zmianą stanu slotu
         trade = {
             'timestamp': datetime.now(),
             'from_token': from_token,
             'to_token': target_token,
             'from_quantity': from_qty,
             'to_quantity': to_qty,
-            'slot': idx,
+            'slot': slot_idx,
             'max_gain': max_gain,
-            'reason': f"Trailing Stop triggered (max_gain={max_gain:.2f}%)"
+            'reason': f'Trailing Stop triggered (max_gain={max_gain:.2f}%)'
         }
+
+        # Wykonanie swapu: zamiana tokenu i ilości w slocie
         slot['token'] = target_token
         slot['quantity'] = to_qty
+
+        # -------------------------
+        # TOP EQUIVALENT LOGIKA
+        # -------------------------
+
         for token in self.tokens_to_track:
             if token == target_token:
+                # Swapowany token → top_equivalent = dokładna ilość uzyskana w swapie
                 slot['top_equivalent'][token] = to_qty
             else:
-                slot['top_equivalent'][token] = self.calculate_equivalent(target_token, token, to_qty)
-            slot['current_gain'][token] = 0.0
-            slot['max_gain'][token] = 0.0
+                # Pozostałe tokeny → przeliczamy ekwiwalent względem nowego tokenu i jego ilości
+                new_equiv = self.calculate_equivalent(target_token, token, to_qty)
+                slot['top_equivalent'][token] = new_equiv if new_equiv is not None else 0.0
+                # Resetujemy gains tylko dla innych tokenów
+                slot['current_gain'][token] = 0.0
+                slot['max_gain'][token] = 0.0
+
+        # Dodanie trade do historii
         st.session_state.trades.append(trade)
         self.save_data()
-        st.toast(f"🔁 SWAP: {from_token} → {target_token} (Slot {idx+1})", icon="✅")
-        st.success(f"💰 Executed SWAP: {from_token} → {target_token} | max_gain {max_gain:.2f}%")
+
+        st.toast(f"🔁 SWAP: {from_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
+        st.success(f"💰 Executed SWAP: {from_token} → {target_token} | max_gain observed: {max_gain:.2f}%")
 
     # ================== UI ==================
     def render_sidebar(self):
