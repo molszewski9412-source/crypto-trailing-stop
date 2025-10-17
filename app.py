@@ -412,17 +412,28 @@ class CryptoTrailingStopApp:
 
     def render_slot_matrix(self, idx, slot):
         data = []
-        best_token = max(slot['max_gain'], key=lambda k: slot['max_gain'][k])
-        best_gain = slot['max_gain'][best_token]
+        # safe best token selection
+        if slot['max_gain']:
+            best_token = max(slot['max_gain'], key=lambda k: slot['max_gain'][k])
+            best_gain = slot['max_gain'][best_token]
+        else:
+            best_token = slot['token']
+            best_gain = 0.0
         for t in self.tokens_to_track:
             cur = self.calculate_equivalent(slot['token'], t, slot['quantity'])
             base = slot['baseline'].get(t, cur)
             top = slot['top_equivalent'].get(t, cur)
             cur_gain = slot['current_gain'].get(t, 0.0)
             max_gain = slot['max_gain'].get(t, 0.0)
-            delta_base = ((cur-base)/base*100) if base>0 else 0
-            delta_top = ((cur-top)/top*100) if top>0 else 0
-            status = "🔵" if t==slot['token'] else "⭐" if t==best_token and best_gain>=0.5 else "🟢" if delta_top>=-1 else "🟡" if delta_top>=-3 else "🔴"
+            delta_base = ((cur - base) / base * 100) if base > 0 else 0
+            delta_top = ((cur - top) / top * 100) if top > 0 else 0
+            status = (
+                "🔵" if t == slot['token'] else
+                "⭐" if t == best_token and best_gain >= 0.5 else
+                "🟢" if delta_top >= -1 else
+                "🟡" if delta_top >= -3 else
+                "🔴"
+            )
             data.append({
                 'Token': t,
                 'Aktualny': f"{cur:.6f}",
@@ -434,7 +445,9 @@ class CryptoTrailingStopApp:
                 'Max Wzrost': f"{max_gain:+.2f}%",
                 'Status': status
             })
-        st.dataframe(pd.DataFrame(data), use_container_width=True, height=800)
+        df = pd.DataFrame(data)
+        # width='stretch' oraz height=None powoduje, że tabela rozciąga się na całą zawartość kontenera
+        st.dataframe(df, width='stretch', height=None)
 
     def render_slot_trade_history(self, idx):
         trades = [t for t in st.session_state.trades if t['slot']==idx]
