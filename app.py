@@ -29,10 +29,11 @@ class TokenInfo:
 class CryptoTrailingStopApp:
     def __init__(self):
         self.fee_rate = 0.00025
+        # trailing_stop_levels keys and values are in percent (e.g. 0.5 -> 0.2 means 0.5% -> 0.2%)
         self.trailing_stop_levels = {0.5: 0.2, 1.0: 0.5, 2.0: 1.0, 5.0: 2.0}
         self.data_file = "trailing_stop_data.json"
         
-        # Lista tokenów - sprawdzone na MEXC
+        # Lista tokenów - sprawdzone na MEXC (możesz edytować)
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
@@ -42,27 +43,28 @@ class CryptoTrailingStopApp:
         ]
         
     def get_trailing_stop_level(self, max_gain: float) -> float:
-        """Zwraca trailing stop level dla danego max_gain"""
+        """Return trailing stop level (in percent) for a given max_gain (in percent)."""
         current_ts = 0.0
+        # iterate thresholds in order
         for gain_threshold, ts_level in sorted(self.trailing_stop_levels.items()):
             if max_gain >= gain_threshold:
                 current_ts = ts_level
         return current_ts
         
     def test_connection(self):
-        """Testuj połączenie z MEXC API"""
+        """Test connection to MEXC API"""
         try:
             url = "https://api.mexc.com/api/v3/ping"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
-                return True, "✅ Połączenie z MEXC API działa"
+                return True, "✅ Connection to MEXC API OK"
             else:
-                return False, f"❌ MEXC API zwraca status: {response.status_code}"
+                return False, f"❌ MEXC API returned status: {response.status_code}"
         except Exception as e:
-            return False, f"❌ Błąd połączenia: {e}"
+            return False, f"❌ Connection error: {e}"
 
     def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
-        """Pobierz ceny z MEXC - bezpieczna wersja z diagnostyką"""
+        """Fetch top-of-book for all USDT pairs from MEXC"""
         prices = {}
         
         try:
@@ -71,12 +73,11 @@ class CryptoTrailingStopApp:
             
             if response.status_code == 200:
                 all_data = response.json()
-                
                 if not all_data:
-                    st.error("❌ MEXC zwrócił pustą odpowiedź")
+                    st.error("❌ MEXC returned empty response")
                     return {}
                 
-                # Filtruj pary USDT
+                # Filter USDT pairs
                 usdt_pairs = {}
                 for item in all_data:
                     symbol = item.get('symbol', '')
@@ -94,7 +95,7 @@ class CryptoTrailingStopApp:
                             bid_price = float(data['bidPrice'])
                             ask_price = float(data['askPrice'])
                             
-                            # Walidacja cen
+                            # validate
                             if bid_price > 0 and ask_price > 0 and bid_price <= ask_price:
                                 prices[token] = TokenInfo(
                                     symbol=token,
@@ -104,41 +105,41 @@ class CryptoTrailingStopApp:
                                 )
                                 found_tokens += 1
                             else:
-                                problematic_tokens.append(f"{token}(nieprawidłowe ceny)")
+                                problematic_tokens.append(f"{token}(bad prices)")
                         except (ValueError, KeyError):
-                            problematic_tokens.append(f"{token}(błąd konwersji)")
+                            problematic_tokens.append(f"{token}(conversion error)")
                     else:
                         problematic_tokens.append(token)
                 
                 if len(problematic_tokens) > 40:
-                    st.warning(f"⚠️ Brak cen dla {len(problematic_tokens)} tokenów")
+                    st.warning(f"⚠️ Missing prices for {len(problematic_tokens)} tokens")
                 
                 if prices:
                     return prices
                 else:
-                    st.error("🚫 Nie udało się pobrać żadnych cen")
+                    st.error("🚫 Could not fetch any prices")
                     return {}
                     
             else:
-                st.error(f"❌ Błąd HTTP {response.status_code} od MEXC")
+                st.error(f"❌ HTTP error {response.status_code} from MEXC")
                 return {}
                 
         except requests.exceptions.Timeout:
-            st.error("⏰ Timeout - MEXC API nie odpowiada")
+            st.error("⏰ Timeout - MEXC API not responding")
             return {}
         except requests.exceptions.ConnectionError:
-            st.error("🌐 Błąd połączenia - sprawdź internet")
+            st.error("🌐 Connection error - check your internet")
             return {}
         except Exception as e:
-            st.error(f"❌ Nieoczekiwany błąd: {e}")
+            st.error(f"❌ Unexpected error: {e}")
             return {}
 
     def get_initial_prices(self) -> Dict[str, TokenInfo]:
-        """Pobierz początkowe ceny"""
+        """Get initial prices"""
         return self.get_all_prices_bulk()
 
     def update_real_prices(self):
-        """Aktualizuj ceny z optymalizacją dla 24/7"""
+        """Update prices with simple rate-limiting for 24/7 usage"""
         if hasattr(st.session_state, 'last_price_update'):
             time_diff = (datetime.now() - st.session_state.last_price_update).seconds
             if time_diff < 3:
@@ -152,13 +153,13 @@ class CryptoTrailingStopApp:
             st.session_state.last_price_update = datetime.now()
 
     def initialize_portfolio_from_usdt(self, usdt_amount: float, selected_tokens: List[str]):
-        """Inicjuj portfolio z USDT - podział na 5 tokenów"""
+        """Initialize portfolio dividing USDT across 5 tokens"""
         if len(selected_tokens) != 5:
-            st.error("❌ Wybierz dokładnie 5 tokenów")
+            st.error("❌ Select exactly 5 tokens")
             return False
             
         if usdt_amount <= 0:
-            st.error("❌ Kwota USDT musi być większa od 0")
+            st.error("❌ USDT amount must be > 0")
             return False
             
         available_tokens = []
@@ -167,7 +168,7 @@ class CryptoTrailingStopApp:
                 available_tokens.append(token)
         
         if len(available_tokens) < 5:
-            st.error(f"❌ Za mało tokenów z dostępnymi cenami: {len(available_tokens)}/5")
+            st.error(f"❌ Not enough tokens with prices: {len(available_tokens)}/5")
             return False
         
         st.session_state.portfolio = []
@@ -177,6 +178,7 @@ class CryptoTrailingStopApp:
         
         for token in available_tokens:
             token_price = st.session_state.prices[token].ask_price
+            # buy full slot quantity (apply sell fee on later sells via calculate_equivalent)
             quantity = (usdt_per_slot / token_price) * (1 - self.fee_rate)
             
             baseline = {}
@@ -184,6 +186,7 @@ class CryptoTrailingStopApp:
             current_gain = {}
             max_gain = {}
             
+            # For baseline/top we store absolute equivalents for the FULL slot quantity.
             for target_token in self.tokens_to_track:
                 if target_token in st.session_state.prices:
                     equivalent = self.calculate_equivalent(token, target_token, quantity)
@@ -205,11 +208,11 @@ class CryptoTrailingStopApp:
             st.session_state.portfolio.append(new_slot)
         
         self.save_data()
-        st.success(f"✅ Utworzono portfolio: {usdt_amount} USDT → 5 slotów")
+        st.success(f"✅ Portfolio initialized: {usdt_amount} USDT → 5 slots")
         return True
 
     def init_session_state(self):
-        """Inicjalizacja stanu sesji z automatycznym wczytaniem danych"""
+        """Initialize streamlit session state and load stored data if present"""
         saved_data = self.load_data()
         
         if 'portfolio' not in st.session_state:
@@ -230,7 +233,7 @@ class CryptoTrailingStopApp:
             st.session_state.app_start_time = datetime.now()
 
     def load_data(self) -> dict:
-        """Automatyczne wczytywanie danych z pliku"""
+        """Load saved data from file"""
         try:
             if os.path.exists(self.data_file):
                 with open(self.data_file, 'r') as f:
@@ -245,8 +248,8 @@ class CryptoTrailingStopApp:
                         'from_quantity': trade['from_quantity'],
                         'to_quantity': trade['to_quantity'],
                         'slot': trade['slot'],
-                        'max_gain': trade['max_gain'],
-                        'reason': trade['reason']
+                        'max_gain': trade.get('max_gain', 0.0),
+                        'reason': trade.get('reason', '')
                     })
                 
                 return {
@@ -255,12 +258,12 @@ class CryptoTrailingStopApp:
                 }
                 
         except Exception as e:
-            st.error(f"❌ Błąd wczytywania danych: {e}")
+            st.error(f"❌ Error loading data: {e}")
         
         return {'portfolio': [], 'trades': []}
 
     def save_data(self):
-        """Automatyczny zapis wszystkich danych"""
+        """Save portfolio and trades to disk"""
         try:
             data = {
                 'portfolio': st.session_state.portfolio,
@@ -272,8 +275,8 @@ class CryptoTrailingStopApp:
                         'from_quantity': trade['from_quantity'],
                         'to_quantity': trade['to_quantity'],
                         'slot': trade['slot'],
-                        'max_gain': trade['max_gain'],
-                        'reason': trade['reason']
+                        'max_gain': trade.get('max_gain', 0.0),
+                        'reason': trade.get('reason', '')
                     }
                     for trade in st.session_state.trades
                 ],
@@ -285,11 +288,15 @@ class CryptoTrailingStopApp:
                 json.dump(data, f, indent=2)
                 
         except Exception as e:
-            st.error(f"❌ Błąd zapisu danych: {e}")
+            st.error(f"❌ Error saving data: {e}")
 
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
-        """Oblicz ekwiwalent z uwzględnieniem fee - bezpieczna wersja"""
+        """Calculate equivalent amount of `to_token` when selling `quantity` of `from_token`.
+           Fees are applied on both sides (sell and buy) as f = 1 - fee_rate.
+           Returns absolute qty of to_token that would be obtained by swapping the full `quantity`.
+        """
         if from_token == to_token:
+            # swapping to itself, apply a single-side fee (or no-op depending on convention). Keep consistent with initialization.
             return quantity * (1 - self.fee_rate)
             
         prices = st.session_state.prices
@@ -298,53 +305,81 @@ class CryptoTrailingStopApp:
             return 0.0
             
         try:
+            # Sell from_token at bid -> receive USDT net after sell fee
             usdt_value = quantity * prices[from_token].bid_price * (1 - self.fee_rate)
-            equivalent = usdt_value / prices[to_token].ask_price * (1 - self.fee_rate)
-            
+            # Buy to_token at ask -> qty net after buy fee
+            equivalent = (usdt_value / prices[to_token].ask_price) * (1 - self.fee_rate)
             return equivalent
         except (ZeroDivisionError, KeyError):
             return 0.0
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA"""
+        """Check trailing stop conditions and execute trades.
+           Correct logic: top_equivalent is NOT updated before swap.
+           We only update max_gain as the maximum observed gain_from_top (in percent).
+           When trailing stop triggers and zero-loss guard holds, we execute swap and then update top_equivalent for that slot.
+        """
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
         
         slot_candidates = {}
         
+        # Build list of candidate swap for each slot (best candidate per slot)
         for slot_idx, slot in enumerate(st.session_state.portfolio):
             swap_candidates = []
             current_tokens = [s['token'] for s in st.session_state.portfolio]
+            from_token = slot['token']
+            qty = slot['quantity']
+            
+            # if qty is zero or from_token missing in prices, skip
+            if qty <= 0 or from_token not in st.session_state.prices:
+                continue
             
             for target_token in self.tokens_to_track:
-                if target_token != slot['token'] and target_token not in current_tokens:
-                    
-                    current_eq = self.calculate_equivalent(slot['token'], target_token, slot['quantity'])
-                    baseline_eq = slot['baseline'].get(target_token, current_eq)
-                    current_top = slot['top_equivalent'].get(target_token, current_eq)
-                    current_max_gain = slot['max_gain'].get(target_token, 0.0)
-                    
-                    # OBLICZENIE GLOBALNEGO WZROSTU OD BASELINE
-                    gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                    
-                    # OBLICZENIE ZMIANY OD TOP (dla trailing stop)
-                    gain_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
-                    
-                    # AKTUALIZACJA MAX GAIN - zawsze aktualizuj jeśli gain_from_top > current_max_gain
-                    if gain_from_top > current_max_gain:
-                        slot['max_gain'][target_token] = gain_from_top
-                        current_max_gain = gain_from_top
-                    
-                    # ZAPISUJEMY CURRENT_GAIN JAKO GLOBALNY WZROST OD BASELINE
-                    slot['current_gain'][target_token] = gain_from_baseline
-                    
-                    # SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% gain od top (aktywacja trailing stop)
-                    if current_max_gain >= 0.5 or gain_from_top >= 0.5:
-                        current_ts = self.get_trailing_stop_level(current_max_gain)
-                        
-                        # WARUNEK SWAPU: spadek o trailing stop od max gain
-                        swap_threshold = current_max_gain - current_ts
-                        if gain_from_top <= swap_threshold:
+                if target_token == from_token:
+                    continue
+                # ensure target token not currently owned by other slot (unique tokens)
+                if target_token in current_tokens:
+                    continue
+                
+                # current equivalent (how many target_token we'd get selling full slot now)
+                current_eq = self.calculate_equivalent(from_token, target_token, qty)
+                if current_eq <= 0:
+                    continue
+                
+                # baseline and current top stored as absolute amounts for the slot's quantity
+                baseline_eq = slot['baseline'].get(target_token, None)
+                current_top = slot['top_equivalent'].get(target_token, None)
+                if current_top is None or current_top <= 0:
+                    # if top not present (rare), set to current_eq as safe fallback (but do not persist here)
+                    current_top = current_eq
+                    slot['top_equivalent'][target_token] = current_top
+                
+                # Gain from baseline used for reporting
+                gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq and baseline_eq > 0 else 0.0
+                slot['current_gain'][target_token] = gain_from_baseline
+                
+                # Gain relative to top (in percent)
+                gain_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0.0
+                
+                # Update max_gain observed (we keep maximum observed gain_from_top)
+                prev_max = slot['max_gain'].get(target_token, 0.0)
+                if gain_from_top > prev_max:
+                    slot['max_gain'][target_token] = gain_from_top
+                    prev_max = gain_from_top
+                
+                current_max_gain = slot['max_gain'].get(target_token, 0.0)
+                
+                # If we've observed a sufficient rise (>=0.5%), compute TS and check drop from max
+                if current_max_gain >= 0.5 or gain_from_top >= 0.5:
+                    # TS depends on current_max_gain (in percent)
+                    current_ts = self.get_trailing_stop_level(current_max_gain)
+                    # swap threshold is: execute when gain_from_top <= current_max_gain - TS
+                    swap_threshold = current_max_gain - current_ts
+                    # Candidate if current gain_from_top is at or below threshold (i.e., has retraced enough)
+                    if gain_from_top <= swap_threshold:
+                        # zero-loss guard: ensure current_eq >= top_equivalent (we'll not perform token-decreasing swaps)
+                        if current_eq >= current_top:
                             swap_candidates.append({
                                 'target_token': target_token,
                                 'current_eq': current_eq,
@@ -353,85 +388,84 @@ class CryptoTrailingStopApp:
                                 'max_gain': current_max_gain,
                                 'trailing_stop': current_ts,
                                 'swap_threshold': swap_threshold,
-                                'priority_score': current_max_gain
+                                'priority_score': current_max_gain  # choose highest max_gain first
                             })
-            
+            # choose top candidate per slot if any
             if swap_candidates:
                 swap_candidates.sort(key=lambda x: x['priority_score'], reverse=True)
                 slot_candidates[slot_idx] = swap_candidates[0]
         
+        # Execute candidates: to avoid conflicts (two slots target same token), run deterministic order
+        executed_targets = set()
         executed_slots = []
-        for slot_idx, candidate in slot_candidates.items():
-            if slot_idx not in executed_slots:
-                slot = st.session_state.portfolio[slot_idx]
-                
-                current_tokens = [s['token'] for s in st.session_state.portfolio]
-                if candidate['target_token'] not in current_tokens:
-                    self.execute_trade(
-                        slot_idx, 
-                        slot, 
-                        candidate['target_token'], 
-                        candidate['current_eq'], 
-                        candidate['max_gain']
-                    )
-                    executed_slots.append(slot_idx)
+        for slot_idx in sorted(slot_candidates.keys()):
+            candidate = slot_candidates[slot_idx]
+            target = candidate['target_token']
+            # skip if another executed slot already took that target
+            if target in executed_targets:
+                continue
+            # double-check target still free
+            current_tokens = [s['token'] for s in st.session_state.portfolio]
+            if target in current_tokens:
+                continue
+            # execute trade
+            slot = st.session_state.portfolio[slot_idx]
+            self.execute_trade(slot_idx, slot, target, candidate['current_eq'], candidate['max_gain'])
+            executed_targets.add(target)
+            executed_slots.append(slot_idx)
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """Wykonaj transakcję trailing stop - BASELINE NIGDY SIĘ NIE ZMIENIA"""
+        """Perform full-slot swap. IMPORTANT: top_equivalent must be updated ONLY AFTER swap for that slot.
+           baseline remains unchanged.
+        """
+        from_token = slot['token']
+        from_qty = slot['quantity']
         
-        # 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
-        updated_tokens = []
-        for token in self.tokens_to_track:
-            if token != slot['token'] and token not in [s['token'] for s in st.session_state.portfolio]:
-                current_actual = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-                current_top = slot['top_equivalent'].get(token, current_actual)
-                
-                if current_actual > current_top:
-                    slot['top_equivalent'][token] = current_actual
-                    updated_tokens.append(token)
+        # Recalculate actual to_quantity at exact moment (consistency)
+        to_qty = self.calculate_equivalent(from_token, target_token, from_qty)
+        if to_qty <= 0:
+            st.warning("⚠️ Swap aborted: computed to_qty <= 0")
+            return
         
-        if updated_tokens:
-            st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów")
-        
+        # Record trade (timestamp before changing slot state)
         trade = {
             'timestamp': datetime.now(),
-            'from_token': slot['token'],
+            'from_token': from_token,
             'to_token': target_token,
-            'from_quantity': slot['quantity'],
-            'to_quantity': equivalent,
+            'from_quantity': from_qty,
+            'to_quantity': to_qty,
             'slot': slot_idx,
             'max_gain': max_gain,
-            'reason': f'Trailing Stop {max_gain:.1f}%'
+            'reason': f'Trailing Stop triggered (max_gain={max_gain:.2f}%)'
         }
         
-        old_token = slot['token']
+        # Execute swap: replace token and qty in the slot
         slot['token'] = target_token
-        slot['quantity'] = equivalent
+        slot['quantity'] = to_qty
         
-        # 2. PO SWAPIE: Resetuj TYLKO top equivalent, current_gain i max_gain
-        # BASELINE POZOSTAJE NIEMIENIONY - ustawiony tylko raz przy inicjacji!
+        # AFTER SWAP: update top_equivalent for this slot based on new base (the new token and its full quantity)
+        # We compute absolute equivalents for the full slot quantity (consistent with baseline representation)
         for token in self.tokens_to_track:
             if token == target_token:
-                # Dla nowego tokena: baseline pozostaje stary, top = actual
-                new_actual = equivalent
+                # equivalent of token->itself is the current quantity
+                slot['top_equivalent'][token] = to_qty
             else:
-                # Dla innych tokenów: baseline pozostaje stary, top = actual
-                new_actual = self.calculate_equivalent(target_token, token, equivalent)
+                new_equiv = self.calculate_equivalent(target_token, token, to_qty)
+                slot['top_equivalent'][token] = new_equiv if new_equiv is not None else 0.0
             
-            # TYLKO top equivalent resetujemy
-            slot['top_equivalent'][token] = new_actual
+            # reset gains for all pairs in this slot
             slot['current_gain'][token] = 0.0
             slot['max_gain'][token] = 0.0
-            # BASELINE NIE DOTYKAMY - pozostaje taki jak przy inicjacji!
         
+        # Save trade in history
         st.session_state.trades.append(trade)
         self.save_data()
         
-        st.toast(f"🔁 SWAP: {old_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
-        st.success(f"💰 WYKONANO SWAP: {old_token} → {target_token} | Max Gain: {max_gain:.2f}%")
+        st.toast(f"🔁 SWAP: {from_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
+        st.success(f"💰 Executed SWAP: {from_token} → {target_token} | max_gain observed: {max_gain:.2f}%")
 
     def clear_all_data(self):
-        """Wyczyść wszystkie dane"""
+        """Clear stored data"""
         st.session_state.portfolio = []
         st.session_state.trades = []
         st.session_state.tracking = False
@@ -439,25 +473,25 @@ class CryptoTrailingStopApp:
         if os.path.exists(self.data_file):
             os.remove(self.data_file)
         
-        st.success("🗑️ Wszystkie dane zostały wyczyszczone!")
+        st.success("🗑️ All data cleared")
         st.rerun()
 
     def render_sidebar(self):
-        """Renderuj panel boczny"""
+        """Render sidebar controls"""
         with st.sidebar:
-            st.title("⚙️ Konfiguracja 24/7")
+            st.title("⚙️ Config 24/7")
             
             if hasattr(st.session_state, 'app_start_time'):
                 uptime = datetime.now() - st.session_state.app_start_time
-                st.metric("Czas działania", f"{uptime.seconds // 3600}h {(uptime.seconds % 3600) // 60}m")
+                st.metric("Uptime", f"{uptime.seconds // 3600}h {(uptime.seconds % 3600) // 60}m")
             
-            st.metric("Slotów portfolio", f"{len(st.session_state.portfolio)}/5")
-            st.metric("Transakcje", len(st.session_state.trades))
-            st.metric("Aktualizacje cen", st.session_state.price_updates)
-            st.metric("Status", "🟢 AKTYWNY" if st.session_state.tracking else "🟡 PAUZA")
+            st.metric("Slots", f"{len(st.session_state.portfolio)}/5")
+            st.metric("Trades", len(st.session_state.trades))
+            st.metric("Price updates", st.session_state.price_updates)
+            st.metric("Status", "🟢 RUNNING" if st.session_state.tracking else "🟡 PAUSED")
             
-            st.subheader("🔍 Diagnostyka")
-            if st.button("🧪 Testuj połączenie z MEXC"):
+            st.subheader("🔍 Diagnostics")
+            if st.button("🧪 Test MEXC connection"):
                 connection_ok, message = self.test_connection()
                 if connection_ok:
                     st.success(message)
@@ -465,8 +499,8 @@ class CryptoTrailingStopApp:
                     st.error(message)
             
             if not st.session_state.portfolio:
-                st.subheader("💰 Inicjacja Portfolio")
-                usdt_amount = st.number_input("Kwota USDT:", min_value=10.0, value=1000.0, step=100.0)
+                st.subheader("💰 Init Portfolio")
+                usdt_amount = st.number_input("USDT amount:", min_value=10.0, value=1000.0, step=100.0)
                 
                 available_tokens = []
                 if hasattr(st.session_state, 'prices'):
@@ -474,25 +508,25 @@ class CryptoTrailingStopApp:
                     available_tokens.sort()
                 
                 if not available_tokens:
-                    st.error("🚫 Brak dostępnych tokenów. Poczekaj na aktualizację cen.")
+                    st.error("🚫 No price data yet. Wait for update.")
                 else:
                     selected_tokens = st.multiselect(
-                        "Wybierz 5 tokenów:", 
+                        "Select 5 tokens:", 
                         available_tokens,
                         default=available_tokens[:5] if len(available_tokens) >= 5 else available_tokens,
                         max_selections=5
                     )
                     
-                    st.caption(f"✅ Dostępne tokeny: {len(available_tokens)}")
+                    st.caption(f"✅ Available tokens: {len(available_tokens)}")
                     
-                    if st.button("🏁 Inicjuj Portfolio", type="primary", use_container_width=True):
+                    if st.button("🏁 Initialize Portfolio", type="primary", use_container_width=True):
                         if len(selected_tokens) == 5:
                             self.initialize_portfolio_from_usdt(usdt_amount, selected_tokens)
                             st.rerun()
                         else:
-                            st.error("❌ Wybierz dokładnie 5 tokenów")
+                            st.error("❌ Select exactly 5 tokens")
             
-            st.subheader("🎮 Sterowanie")
+            st.subheader("🎮 Controls")
             col1, col2 = st.columns(2)
             
             with col1:
@@ -502,82 +536,66 @@ class CryptoTrailingStopApp:
                         st.session_state.app_start_time = datetime.now()
                         st.rerun()
                     else:
-                        st.error("❌ Brak cen do śledzenia")
+                        st.error("❌ No prices to track")
             
             with col2:
                 if st.button("⏹ Stop", use_container_width=True) and st.session_state.tracking:
                     st.session_state.tracking = False
                     st.rerun()
             
-            st.subheader("🔄 Auto-restart")
-            if st.button("♻️ Restart śledzenia", use_container_width=True):
-                st.session_state.tracking = True
-                st.session_state.price_updates = 0
-                st.success("🔄 Śledzenie zrestartowane!")
-                time.sleep(1)
-                st.rerun()
-            
-            st.subheader("💰 Aktualne ceny")
-            if st.session_state.prices:
-                sample_tokens = list(st.session_state.prices.keys())[:3]
-                for token in sample_tokens:
-                    price_info = st.session_state.prices[token]
-                    st.caption(f"{token}: {price_info.bid_price:.4f} / {price_info.ask_price:.4f}")
-                
-                last_update = list(st.session_state.prices.values())[0].last_update
-                st.caption(f"🕒 Ostatnia aktualizacja: {last_update.strftime('%H:%M:%S')}")
-            else:
-                st.caption("🚫 Brak danych cenowych")
-            
-            st.subheader("💾 Zarządzanie danymi")
+            st.subheader("💾 Data")
             if os.path.exists(self.data_file):
                 file_time = os.path.getmtime(self.data_file)
                 file_size = os.path.getsize(self.data_file) / 1024
-                st.caption(f"📁 Ostatni zapis: {datetime.fromtimestamp(file_time).strftime('%H:%M:%S')}")
-                st.caption(f"📊 Rozmiar danych: {file_size:.1f} KB")
+                st.caption(f"📁 Last save: {datetime.fromtimestamp(file_time).strftime('%H:%M:%S')}")
+                st.caption(f"📊 Data size: {file_size:.1f} KB")
                 
-                if st.button("🗑️ Wyczyść wszystkie dane", use_container_width=True):
+                if st.button("🗑️ Clear all data", use_container_width=True):
                     self.clear_all_data()
             
-            st.subheader("🎯 Trailing Stop")
+            st.subheader("🎯 Trailing Stop Levels")
             for gain, stop in sorted(self.trailing_stop_levels.items()):
-                st.text(f"💰 {gain}% zysk → trailing stop {stop}% poniżej max")
+                st.text(f"💰 {gain}% gain → trailing stop {stop}% below max")
 
     def render_portfolio_overview(self):
-        """Renderuj przegląd portfolio"""
-        st.header("📊 Przegląd Portfolio")
+        """Render portfolio overview"""
+        st.header("📊 Portfolio Overview")
         
         if not st.session_state.portfolio:
-            st.info("👈 Zainicjuj portfolio z USDT w panelu bocznym")
+            st.info("👈 Initialize portfolio from sidebar")
             return
         
         cols = st.columns(len(st.session_state.portfolio))
         for idx, (col, slot) in enumerate(zip(cols, st.session_state.portfolio)):
             with col:
-                current_value = slot['quantity'] * st.session_state.prices[slot['token']].bid_price
-                st.metric(
-                    label=f"Slot {idx + 1} - {slot['token']}",
-                    value=f"{slot['quantity']:.4f}",
-                    delta=f"{current_value:.2f} USDT"
-                )
+                # Check availability of price for the slot token
+                if slot['token'] in st.session_state.prices:
+                    current_value = slot['quantity'] * st.session_state.prices[slot['token']].bid_price
+                    st.metric(
+                        label=f"Slot {idx + 1} - {slot['token']}",
+                        value=f"{slot['quantity']:.6f}",
+                        delta=f"{current_value:.2f} USDT"
+                    )
+                else:
+                    st.metric(label=f"Slot {idx + 1} - {slot['token']}", value=f"{slot['quantity']:.6f}", delta="N/A")
 
     def render_trailing_matrix(self):
-        """Renderuj macierz trailing stop z historią per slot"""
-        st.header("🎯 Macierz Trailing Stop")
+        """Render trailing matrix and history for each slot"""
+        st.header("🎯 Trailing Stop Matrix")
         
         for slot_idx, slot in enumerate(st.session_state.portfolio):
             self.render_slot_with_history(slot_idx, slot)
 
     def render_slot_with_history(self, slot_idx: int, slot: dict):
-        """Renderuj slot z macierzą i historią"""
-        with st.expander(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({slot['quantity']:.4f})", expanded=True):
+        """Render a slot with matrix and trade history"""
+        with st.expander(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({slot['quantity']:.6f})", expanded=True):
             self.render_slot_matrix(slot_idx, slot)
             self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """Renderuj macierz dla pojedynczego slotu z oznaczeniem najlepszej pary"""
+        """Render matrix for a single slot"""
         matrix_data = []
-        best_pair_gain = -999
+        best_pair_gain = -999.0
         best_pair_token = None
         
         for token in self.tokens_to_track:
@@ -618,11 +636,11 @@ class CryptoTrailingStopApp:
         st.dataframe(df, use_container_width=True, height=800)
 
     def render_slot_trade_history(self, slot_idx: int):
-        """Renderuj historię transakcji dla slotu"""
+        """Render trade history for a slot"""
         slot_trades = [t for t in st.session_state.trades if t['slot'] == slot_idx]
         
         if slot_trades:
-            st.subheader(f"📋 Historia Slot {slot_idx + 1}")
+            st.subheader(f"📋 History Slot {slot_idx + 1}")
             
             history_data = []
             for trade in slot_trades[-10:]:
@@ -637,10 +655,10 @@ class CryptoTrailingStopApp:
             
             st.dataframe(pd.DataFrame(history_data), use_container_width=True)
         else:
-            st.caption("📝 Brak historii transakcji dla tego slotu")
+            st.caption("📝 No trades for this slot yet")
 
     def keep_app_alive(self):
-        """Funkcja utrzymująca aplikację aktywną"""
+        """Keep app alive heartbeat"""
         if not hasattr(st.session_state, 'last_active_ping'):
             st.session_state.last_active_ping = datetime.now()
         
@@ -649,7 +667,7 @@ class CryptoTrailingStopApp:
             st.session_state.last_active_ping = datetime.now()
 
     def run(self):
-        """Główna pętla aplikacji - ZOPTYMALIZOWANA DLA 24/7"""
+        """Main app loop"""
         try:
             self.init_session_state()
             
@@ -662,7 +680,7 @@ class CryptoTrailingStopApp:
             
             if st.session_state.portfolio and not st.session_state.tracking:
                 with st.sidebar:
-                    if st.button("▶ Auto-start śledzenia", type="primary", use_container_width=True):
+                    if st.button("▶ Auto-start tracking", type="primary", use_container_width=True):
                         st.session_state.tracking = True
                         st.rerun()
             
@@ -673,7 +691,7 @@ class CryptoTrailingStopApp:
                     self.render_trailing_matrix()
                     
                     if st.session_state.tracking:
-                        st.success(f"🟢 ŚLEDZENIE AKTYWNE | Ostatnia aktualizacja: {datetime.now().strftime('%H:%M:%S')}")
+                        st.success(f"🟢 TRACKING ACTIVE | Last update: {datetime.now().strftime('%H:%M:%S')}")
                         
                         self.update_real_prices()
                         self.check_and_execute_trades()
@@ -681,19 +699,19 @@ class CryptoTrailingStopApp:
                         time.sleep(3)
                         st.rerun()
             else:
-                st.error("🚫 Brak danych cenowych")
-                if st.button("🔄 Pobierz ceny ponownie") or st.session_state.tracking:
+                st.error("🚫 No price data")
+                if st.button("🔄 Refresh prices") or st.session_state.tracking:
                     st.session_state.prices = self.get_initial_prices()
                     time.sleep(2)
                     st.rerun()
                     
         except Exception as e:
-            st.error(f"🔴 Krytyczny błąd: {e}")
-            st.info("🔄 Automatyczny restart za 10 sekund...")
+            st.error(f"🔴 Critical error: {e}")
+            st.info("🔄 Auto-restart in 10 seconds...")
             time.sleep(10)
             st.rerun()
 
-# Uruchom aplikację
+# Run app
 if __name__ == "__main__":
     app = CryptoTrailingStopApp()
     app.run()
