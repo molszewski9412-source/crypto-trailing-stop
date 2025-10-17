@@ -410,44 +410,74 @@ class CryptoTrailingStopApp:
         # Wyświetlamy historię swapów dla slotu
         self.render_slot_trade_history(slot_idx)
 
-    def render_slot_matrix(self, idx, slot):
-        data = []
-        # safe best token selection
-        if slot['max_gain']:
-            best_token = max(slot['max_gain'], key=lambda k: slot['max_gain'][k])
-            best_gain = slot['max_gain'][best_token]
-        else:
-            best_token = slot['token']
-            best_gain = 0.0
-        for t in self.tokens_to_track:
-            cur = self.calculate_equivalent(slot['token'], t, slot['quantity'])
-            base = slot['baseline'].get(t, cur)
-            top = slot['top_equivalent'].get(t, cur)
-            cur_gain = slot['current_gain'].get(t, 0.0)
-            max_gain = slot['max_gain'].get(t, 0.0)
-            delta_base = ((cur - base) / base * 100) if base > 0 else 0
-            delta_top = ((cur - top) / top * 100) if top > 0 else 0
-            status = (
-                "🔵" if t == slot['token'] else
-                "⭐" if t == best_token and best_gain >= 0.5 else
-                "🟢" if delta_top >= -1 else
-                "🟡" if delta_top >= -3 else
-                "🔴"
-            )
-            data.append({
-                'Token': t,
-                'Aktualny': f"{cur:.6f}",
-                'Początkowy': f"{base:.6f}",
-                'Δ Od początku': f"{delta_base:+.2f}%",
-                'Top': f"{top:.6f}",
-                'Δ Od top': f"{delta_top:+.2f}%",
-                'Current Gain': f"{cur_gain:+.2f}%",
+    def render_slot_matrix(self, slot_idx: int, slot: dict):
+        """
+        Render matrix for a single slot.
+        Wyświetla pełną macierz tokenów i ich aktualne oraz top ekwiwalenty.
+
+        Zmiany:
+        - Użyto st.table() zamiast st.dataframe, aby uniknąć przewijania.
+        - Pokazuje absolutne wartości, delta od początkowego i od top.
+        - Status wskazuje token własny, najlepszy kandydat i kolory w zależności od zmiany.
+        """
+        matrix_data = []
+        best_pair_gain = -999.0
+        best_pair_token = None
+
+        # Szukamy tokenu z najwyższym max_gain
+        for token in self.tokens_to_track:
+            current_max_gain = slot.get('max_gain', {}).get(token, 0.0)
+            if current_max_gain > best_pair_gain:
+                best_pair_gain = current_max_gain
+                best_pair_token = token
+
+        # Budujemy wiersze tabeli
+        for token in self.tokens_to_track:
+            current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
+            try:
+                current_eq = float(current_eq)
+            except:
+                current_eq = 0.0
+            baseline_eq = slot.get('baseline', {}).get(token, current_eq)
+            try:
+                baseline_eq = float(baseline_eq)
+            except:
+                baseline_eq = 0.0
+            top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
+            try:
+                top_eq = float(top_eq)
+            except:
+                top_eq = 0.0
+
+            current_gain = slot.get('current_gain', {}).get(token, 0.0)
+            max_gain = slot.get('max_gain', {}).get(token, 0.0)
+
+            change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0.0
+            change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0.0
+
+            # Status wizualny: własny token, najlepszy kandydat lub kolory zmiany
+            status = "🟢" if change_from_top >= -1 else "🟡" if change_from_top >= -3 else "🔴"
+            if token == slot['token']:
+                status = "🔵"
+            elif token == best_pair_token and best_pair_gain >= 0.5:
+                status = "⭐"
+
+            matrix_data.append({
+                'Token': token,
+                'Aktualny': f"{current_eq:.6f}",
+                'Początkowy': f"{baseline_eq:.6f}",
+                'Δ Od początku': f"{change_from_baseline:+.2f}%",
+                'Top': f"{top_eq:.6f}",
+                'Δ Od top': f"{change_from_top:+.2f}%",
+                'Current Gain': f"{current_gain:+.2f}%",
                 'Max Wzrost': f"{max_gain:+.2f}%",
                 'Status': status
             })
-        df = pd.DataFrame(data)
-        # width='stretch' oraz height=None powoduje, że tabela rozciąga się na całą zawartość kontenera
-        st.dataframe(df, width='stretch', height=None)
+
+        df = pd.DataFrame(matrix_data)
+
+        # Wyświetlamy pełną macierz bez przewijania
+        st.table(df)
 
     def render_slot_trade_history(self, idx):
         trades = [t for t in st.session_state.trades if t['slot']==idx]
