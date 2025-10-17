@@ -42,7 +42,7 @@ class CryptoTrailingStopApp:
         ]
         
     def get_trailing_stop_level(self, max_gain: float) -> float:
-        """Zwraca trailing stop level dla danego max_gain - DYNAMICZNY"""
+        """Zwraca trailing stop level dla danego max_gain"""
         current_ts = 0.0
         for gain_threshold, ts_level in sorted(self.trailing_stop_levels.items()):
             if max_gain >= gain_threshold:
@@ -306,7 +306,7 @@ class CryptoTrailingStopApp:
             return 0.0
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA MAX GAIN"""
+        """Sprawdź warunki trailing stop - POPRAWIONA LOGIKA"""
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
         
@@ -330,7 +330,7 @@ class CryptoTrailingStopApp:
                     # OBLICZENIE ZMIANY OD TOP (dla trailing stop)
                     gain_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
                     
-                    # ✅ POPRAWNA AKTUALIZACJA MAX GAIN - zawsze aktualizuj jeśli gain_from_top > current_max_gain
+                    # AKTUALIZACJA MAX GAIN - zawsze aktualizuj jeśli gain_from_top > current_max_gain
                     if gain_from_top > current_max_gain:
                         slot['max_gain'][target_token] = gain_from_top
                         current_max_gain = gain_from_top
@@ -338,8 +338,7 @@ class CryptoTrailingStopApp:
                     # ZAPISUJEMY CURRENT_GAIN JAKO GLOBALNY WZROST OD BASELINE
                     slot['current_gain'][target_token] = gain_from_baseline
                     
-                    # ✅ POPRAWNE SPRAWDZENIE AKTYWACJI TRAILING STOP
-                    # Trailing stop aktywuje się gdy gain_from_top >= 0.5% LUB już był aktywny (current_max_gain >= 0.5)
+                    # SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% gain od top (aktywacja trailing stop)
                     if current_max_gain >= 0.5 or gain_from_top >= 0.5:
                         current_ts = self.get_trailing_stop_level(current_max_gain)
                         
@@ -378,16 +377,15 @@ class CryptoTrailingStopApp:
                     executed_slots.append(slot_idx)
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """Wykonaj transakcję trailing stop - AKTUALIZUJ TOP TYLKO PRZY SWAPIE"""
+        """Wykonaj transakcję trailing stop - BASELINE NIGDY SIĘ NIE ZMIENIA"""
         
-        # ✅ 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
+        # 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
         updated_tokens = []
         for token in self.tokens_to_track:
             if token != slot['token'] and token not in [s['token'] for s in st.session_state.portfolio]:
                 current_actual = self.calculate_equivalent(slot['token'], token, slot['quantity'])
                 current_top = slot['top_equivalent'].get(token, current_actual)
                 
-                # ✅ TYLKO TUTAJ aktualizujemy top equivalent - tylko jeśli actual > top
                 if current_actual > current_top:
                     slot['top_equivalent'][token] = current_actual
                     updated_tokens.append(token)
@@ -410,19 +408,21 @@ class CryptoTrailingStopApp:
         slot['token'] = target_token
         slot['quantity'] = equivalent
         
-        # ✅ 2. PO SWAPIE: Resetuj dane dla WSZYSTKICH tokenów w slocie
+        # 2. PO SWAPIE: Resetuj TYLKO top equivalent, current_gain i max_gain
+        # BASELINE POZOSTAJE NIEMIENIONY - ustawiony tylko raz przy inicjacji!
         for token in self.tokens_to_track:
             if token == target_token:
-                # Dla tokena posiadanego: baseline i top to ilość tokena
+                # Dla nowego tokena: baseline pozostaje stary, top = actual
                 new_actual = equivalent
             else:
-                # Dla innych tokenów: oblicz ekwiwalent
+                # Dla innych tokenów: baseline pozostaje stary, top = actual
                 new_actual = self.calculate_equivalent(target_token, token, equivalent)
             
-            slot['baseline'][token] = new_actual
+            # TYLKO top equivalent resetujemy
             slot['top_equivalent'][token] = new_actual
             slot['current_gain'][token] = 0.0
             slot['max_gain'][token] = 0.0
+            # BASELINE NIE DOTYKAMY - pozostaje taki jak przy inicjacji!
         
         st.session_state.trades.append(trade)
         self.save_data()
