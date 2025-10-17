@@ -400,9 +400,14 @@ class CryptoTrailingStopApp:
         for idx, slot in enumerate(st.session_state.portfolio):
             self.render_slot_with_history(idx, slot)
 
-    def render_slot_with_history(self, slot_idx, slot):
+    def render_slot_with_history(self, slot_idx: int, slot: dict):
+        # Wyświetlamy nagłówek dla slotu
         st.subheader(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({slot['quantity']:.6f})")
+        
+        # Wyświetlamy macierz z aktualnymi danymi
         self.render_slot_matrix(slot_idx, slot)
+        
+        # Wyświetlamy historię swapów dla slotu
         self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, idx, slot):
