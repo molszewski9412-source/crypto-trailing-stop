@@ -306,7 +306,7 @@ class CryptoTrailingStopApp:
             return 0.0
 
     def check_and_execute_trades(self):
-        """Sprawdź warunki trailing stop - TOP AKTUALIZOWANY TYLKO PRZY SWAPIE"""
+        """Sprawdź warunki trailing stop - ZOPTYMALIZOWANA LOGIKA"""
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
         
@@ -324,22 +324,13 @@ class CryptoTrailingStopApp:
                     current_top = slot['top_equivalent'].get(target_token, current_eq)
                     current_max_gain = slot['max_gain'].get(target_token, 0.0)
                     
-                    # OBLICZENIE GLOBALNEGO WZROSTU OD BASELINE
-                    gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                    
                     # OBLICZENIE ZMIANY OD TOP (dla trailing stop)
                     gain_from_top = ((current_eq - current_top) / current_top * 100) if current_top > 0 else 0
-                    
-                    # ✅ USUNIĘTE: Aktualizacja top equivalent na bieżąco
-                    # Top equivalent jest aktualizowany TYLKO przy swapie
                     
                     # AKTUALIZACJA MAX GAIN - najwyższy gain od top
                     if gain_from_top > current_max_gain:
                         slot['max_gain'][target_token] = gain_from_top
                         current_max_gain = gain_from_top
-                    
-                    # ZAPISUJEMY CURRENT_GAIN JAKO GLOBALNY WZROST OD BASELINE
-                    slot['current_gain'][target_token] = gain_from_baseline
                     
                     # SPRAWDŹ CZY PARA OSIĄGNĘŁA 0.5% gain od top (aktywacja trailing stop)
                     if current_max_gain >= 0.5:
@@ -351,7 +342,6 @@ class CryptoTrailingStopApp:
                             swap_candidates.append({
                                 'target_token': target_token,
                                 'current_eq': current_eq,
-                                'gain_from_baseline': gain_from_baseline,
                                 'gain_from_top': gain_from_top,
                                 'max_gain': current_max_gain,
                                 'trailing_stop': current_ts,
@@ -380,46 +370,51 @@ class CryptoTrailingStopApp:
                     executed_slots.append(slot_idx)
 
     def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """Wykonaj transakcję trailing stop - AKTUALIZUJ TOP TYLKO PRZY SWAPIE"""
+        """Wykonaj transakcję trailing stop - POPRAWIONA I ZOPTYMALIZOWANA WERSJA"""
         
-        # ✅ 1. PRZED SWAPEM: Aktualizuj top equivalent dla WSZYSTKICH par gdzie actual > top
+        old_token = slot['token']
+        old_quantity = slot['quantity']
+        
+        # ZAPISZ STARE TOP DLA PORÓWNANIA
+        old_top_equivalent = slot['top_equivalent'].copy()
+        
+        # WYKONAJ SWAP
+        slot['token'] = target_token
+        slot['quantity'] = equivalent
+        
+        # ✅ JEDNORAZOWO PO SWAPIE: Oblicz NOWE ekwiwalenty dla WSZYSTKICH tokenów
         updated_tokens = []
+        
         for token in self.tokens_to_track:
-            if token != slot['token'] and token not in [s['token'] for s in st.session_state.portfolio]:
-                current_actual = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-                current_top = slot['top_equivalent'].get(token, current_actual)
-                
-                # ✅ TYLKO TUTAJ aktualizujemy top equivalent - tylko jeśli actual > top
-                if current_actual > current_top:
-                    slot['top_equivalent'][token] = current_actual
-                    updated_tokens.append(token)
+            if token == target_token:
+                new_equivalent = equivalent  # Dla posiadanego tokena
+            else:
+                new_equivalent = self.calculate_equivalent(target_token, token, equivalent)
+            
+            # ✅ AKTUALIZUJ TOP TYLKO JEŚLI NOWY EKWIVALENT JEST WYŻSZY niż stary top
+            old_top = old_top_equivalent.get(token, new_equivalent)
+            
+            if new_equivalent > old_top:
+                slot['top_equivalent'][token] = new_equivalent
+                updated_tokens.append(token)
+            
+            # ✅ RESETUJEMY TYLKO max_gain dla nowego tokena
+            slot['max_gain'][token] = 0.0
         
         if updated_tokens:
-            st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów")
+            st.success(f"📈 Zaktualizowano top dla {len(updated_tokens)} tokenów: {', '.join(updated_tokens)}")
         
+        # Zapisz transakcję
         trade = {
             'timestamp': datetime.now(),
-            'from_token': slot['token'],
+            'from_token': old_token,
             'to_token': target_token,
-            'from_quantity': slot['quantity'],
+            'from_quantity': old_quantity,
             'to_quantity': equivalent,
             'slot': slot_idx,
             'max_gain': max_gain,
             'reason': f'Trailing Stop {max_gain:.1f}%'
         }
-        
-        old_token = slot['token']
-        slot['token'] = target_token
-        slot['quantity'] = equivalent
-        
-        # ✅ 2. PO SWAPIE: Resetuj dane dla nowego tokena (baseline = top = actual)
-        for token in self.tokens_to_track:
-            if token != target_token:
-                new_actual = self.calculate_equivalent(target_token, token, equivalent)
-                slot['baseline'][token] = new_actual
-                slot['top_equivalent'][token] = new_actual
-                slot['current_gain'][token] = 0.0
-                slot['max_gain'][token] = 0.0
         
         st.session_state.trades.append(trade)
         self.save_data()
@@ -572,16 +567,8 @@ class CryptoTrailingStopApp:
             self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """Renderuj macierz dla pojedynczego slotu z oznaczeniem najlepszej pary"""
+        """Renderuj macierz dla pojedynczego slotu z wymaganymi polami"""
         matrix_data = []
-        best_pair_gain = -999
-        best_pair_token = None
-        
-        for token in self.tokens_to_track:
-            current_max_gain = slot['max_gain'].get(token, 0.0)
-            if current_max_gain > best_pair_gain:
-                best_pair_gain = current_max_gain
-                best_pair_token = token
         
         for token in self.tokens_to_track:
             current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
@@ -590,29 +577,44 @@ class CryptoTrailingStopApp:
             current_gain = slot['current_gain'].get(token, 0.0)
             max_gain = slot['max_gain'].get(token, 0.0)
             
+            # Obliczenia procentowe
             change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-            change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
+            gain_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
             
-            status = "🟢" if change_from_top >= -1 else "🟡" if change_from_top >= -3 else "🔴"
+            # Status
             if token == slot['token']:
-                status = "🔵"
-            elif token == best_pair_token and best_pair_gain >= 0.5:
-                status = "⭐"
+                status = "🔵 POSIADANY"
+            elif gain_from_top >= -1:
+                status = "🟢 AKTYWNY"
+            elif gain_from_top >= -3:
+                status = "🟡 OBSERWACJA"
+            else:
+                status = "🔴 NIEAKTYWNY"
             
+            # Dodaj do macierzy
             matrix_data.append({
-                'Token': token,
-                'Aktualny': f"{current_eq:.6f}",
-                'Początkowy': f"{baseline_eq:.6f}",
-                'Δ Od początku': f"{change_from_baseline:+.2f}%",
-                'Top': f"{top_eq:.6f}",
-                'Δ Od top': f"{change_from_top:+.2f}%",
-                'Current Gain': f"{current_gain:+.2f}%",
-                'Max Wzrost': f"{max_gain:+.2f}%",
+                'Ticker': token,
+                'Actual Equivalent': f"{current_eq:.6f}",
+                'Baseline': f"{baseline_eq:.6f}",
+                'Δ Od Baseline': f"{change_from_baseline:+.2f}%",
+                'Top Equivalent': f"{top_eq:.6f}",
+                'Gain % (od Top)': f"{gain_from_top:+.2f}%",
+                'Max Gain %': f"{max_gain:+.2f}%",
                 'Status': status
             })
         
+        # Utwórz DataFrame i wyświetl
         df = pd.DataFrame(matrix_data)
-        st.dataframe(df, use_container_width=True, height=800)
+        
+        # Stylowanie DataFrame
+        styled_df = df.style.apply(
+            lambda x: ['background: lightblue' if 'POSIADANY' in str(v) else 
+                      'background: lightgreen' if 'AKTYWNY' in str(v) else
+                      'background: lightyellow' if 'OBSERWACJA' in str(v) else '' for v in x], 
+            axis=1
+        )
+        
+        st.dataframe(styled_df, use_container_width=True, height=600)
 
     def render_slot_trade_history(self, slot_idx: int):
         """Renderuj historię transakcji dla slotu"""
