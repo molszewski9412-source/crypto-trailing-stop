@@ -154,6 +154,26 @@ class CryptoTrailingStopApp:
             st.session_state.app_start_time = datetime.now()
         if 'trailing_stop_levels' not in st.session_state:
             st.session_state.trailing_stop_levels = self.trailing_stop_levels
+        
+        # Napraw brakujące pola w istniejącym portfolio
+        self.fix_portfolio_data()
+
+    def fix_portfolio_data(self):
+        """Naprawia brakujące pola w istniejącym portfolio"""
+        if hasattr(st.session_state, 'portfolio'):
+            for slot in st.session_state.portfolio:
+                # Dodaj brakujące pola jeśli nie istnieją
+                if 'quantity_history' not in slot:
+                    slot['quantity_history'] = [slot['quantity']]
+                if 'timestamp_history' not in slot:
+                    slot['timestamp_history'] = [datetime.now()]
+                if 'baseline_usdt' not in slot:
+                    # Oblicz baseline_usdt na podstawie aktualnej ceny
+                    if slot['token'] in st.session_state.prices:
+                        current_price = st.session_state.prices[slot['token']].bid_price
+                        slot['baseline_usdt'] = slot['quantity'] * current_price
+                    else:
+                        slot['baseline_usdt'] = 0.0
 
     # ================== Load/Save ==================
     def load_data(self):
@@ -173,7 +193,18 @@ class CryptoTrailingStopApp:
                         'max_gain': t.get('max_gain', 0.0),
                         'reason': t.get('reason', '')
                     })
-                return {'portfolio': data.get('portfolio', []), 'trades': trades}
+                
+                # Dodaj brakujące pola do załadowanego portfolio
+                portfolio = data.get('portfolio', [])
+                for slot in portfolio:
+                    if 'quantity_history' not in slot:
+                        slot['quantity_history'] = [slot['quantity']]
+                    if 'timestamp_history' not in slot:
+                        slot['timestamp_history'] = [datetime.now()]
+                    if 'baseline_usdt' not in slot:
+                        slot['baseline_usdt'] = 0.0
+                
+                return {'portfolio': portfolio, 'trades': trades}
         except Exception as e:
             st.error(f"❌ {e}")
         return {'portfolio': [], 'trades': []}
@@ -284,6 +315,11 @@ class CryptoTrailingStopApp:
             return
 
         # Aktualizacja historii ilości
+        if 'quantity_history' not in slot:
+            slot['quantity_history'] = [from_qty]
+        if 'timestamp_history' not in slot:
+            slot['timestamp_history'] = [datetime.now()]
+            
         slot['quantity_history'].append(to_qty)
         slot['timestamp_history'].append(datetime.now())
         # Zachowaj tylko ostatnie 50 punktów danych
@@ -339,11 +375,11 @@ class CryptoTrailingStopApp:
             
             col1, col2 = st.columns(2)
             with col1:
-                new_levels[0.5] = st.number_input("0.5% gain → TS:", value=ts_levels.get(0.5, 0.2), min_value=0.1, max_value=5.0, step=0.1, key="ts_0.5")
-                new_levels[1.0] = st.number_input("1.0% gain → TS:", value=ts_levels.get(1.0, 0.5), min_value=0.1, max_value=5.0, step=0.1, key="ts_1.0")
+                new_levels[0.5] = st.number_input("0.5% gain → TS:", value=float(ts_levels.get(0.5, 0.2)), min_value=0.1, max_value=5.0, step=0.1, key="ts_0.5")
+                new_levels[1.0] = st.number_input("1.0% gain → TS:", value=float(ts_levels.get(1.0, 0.5)), min_value=0.1, max_value=5.0, step=0.1, key="ts_1.0")
             with col2:
-                new_levels[2.0] = st.number_input("2.0% gain → TS:", value=ts_levels.get(2.0, 1.0), min_value=0.1, max_value=5.0, step=0.1, key="ts_2.0")
-                new_levels[5.0] = st.number_input("5.0% gain → TS:", value=ts_levels.get(5.0, 2.0), min_value=0.1, max_value=5.0, step=0.1, key="ts_5.0")
+                new_levels[2.0] = st.number_input("2.0% gain → TS:", value=float(ts_levels.get(2.0, 1.0)), min_value=0.1, max_value=5.0, step=0.1, key="ts_2.0")
+                new_levels[5.0] = st.number_input("5.0% gain → TS:", value=float(ts_levels.get(5.0, 2.0)), min_value=0.1, max_value=5.0, step=0.1, key="ts_5.0")
             
             st.session_state.trailing_stop_levels = new_levels
 
@@ -432,7 +468,7 @@ class CryptoTrailingStopApp:
                         )
                         
                         # Wykres ilościowy z zaokrągleniem
-                        if len(slot['quantity_history']) > 1:
+                        if 'quantity_history' in slot and len(slot['quantity_history']) > 1:
                             chart_data = pd.DataFrame({
                                 'Quantity': slot['quantity_history'],
                                 'Time': range(len(slot['quantity_history']))
@@ -443,6 +479,8 @@ class CryptoTrailingStopApp:
                                 y='Quantity',
                                 use_container_width=True
                             )
+                        else:
+                            st.info("No history data yet")
                 else:
                     st.error(f"❌ No price data for {slot['token']}")
 
