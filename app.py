@@ -124,7 +124,7 @@ class CryptoTrailingStopApp:
                 'current_gain': current_gain,
                 'max_gain': max_gain,
                 'usdt_value': quantity * st.session_state.prices[token].bid_price,
-                'baseline_usdt': usdt_per_slot,
+                'baseline_quantity': quantity,  # Baseline jako ilość tokena
                 'quantity_history': [quantity],
                 'timestamp_history': [datetime.now()]
             }
@@ -167,13 +167,8 @@ class CryptoTrailingStopApp:
                     slot['quantity_history'] = [slot['quantity']]
                 if 'timestamp_history' not in slot:
                     slot['timestamp_history'] = [datetime.now()]
-                if 'baseline_usdt' not in slot:
-                    # Oblicz baseline_usdt na podstawie aktualnej ceny
-                    if slot['token'] in st.session_state.prices:
-                        current_price = st.session_state.prices[slot['token']].bid_price
-                        slot['baseline_usdt'] = slot['quantity'] * current_price
-                    else:
-                        slot['baseline_usdt'] = 0.0
+                if 'baseline_quantity' not in slot:
+                    slot['baseline_quantity'] = slot['quantity']
 
     # ================== Load/Save ==================
     def load_data(self):
@@ -201,8 +196,8 @@ class CryptoTrailingStopApp:
                         slot['quantity_history'] = [slot['quantity']]
                     if 'timestamp_history' not in slot:
                         slot['timestamp_history'] = [datetime.now()]
-                    if 'baseline_usdt' not in slot:
-                        slot['baseline_usdt'] = 0.0
+                    if 'baseline_quantity' not in slot:
+                        slot['baseline_quantity'] = slot['quantity']
                 
                 return {'portfolio': portfolio, 'trades': trades}
         except Exception as e:
@@ -275,34 +270,30 @@ class CryptoTrailingStopApp:
                 if current_eq <= 0:
                     continue
                 
-                # Pobierz baseline (NIGDY nieaktualizowany po inicjacji)
-                baseline_eq = slot['baseline'].get(target_token, current_eq)
-                
                 # Pobierz top equivalent (aktualizowany tylko przy swapie)
                 top_eq = slot['top_equivalent'].get(target_token, current_eq)
                 
-                # Oblicz gain od baseline (tylko do wyświetlania)
-                gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                
-                # Oblicz gain od top (do logiki trailing stop)
+                # Oblicz gain % od top
                 gain_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
                 
-                # Aktualizuj current_gain dla wyświetlania
-                slot['current_gain'][target_token] = gain_from_top  # Używamy gain_from_top dla trailing stop!
+                # Aktualizuj current_gain
+                slot['current_gain'][target_token] = gain_from_top
                 
-                # Aktualizuj max_gain tylko jeśli gain_from_top jest wyższy
+                # Aktualizuj max_gain tylko jeśli gain_from_top jest wyższy niż 0.5%
+                # i jest wyższy niż poprzedni max_gain
                 prev_max = slot['max_gain'].get(target_token, 0.0)
-                if gain_from_top > prev_max:
+                if gain_from_top >= 0.5 and gain_from_top > prev_max:
                     slot['max_gain'][target_token] = gain_from_top
                 
                 current_max_gain = slot['max_gain'].get(target_token, 0.0)
                 
-                # Sprawdź warunki trailing stop
-                if current_max_gain >= 0.5:  # Minimalny próg do aktywacji trailing stop
+                # Sprawdź warunki trailing stop tylko jeśli max_gain >= 0.5%
+                if current_max_gain >= 0.5:
                     ts = self.get_trailing_stop_level(current_max_gain)
                     swap_threshold = current_max_gain - ts
                     
-                    if gain_from_top <= swap_threshold and current_eq > 0:
+                    # Sprawdź czy gain spadł poniżej progu trailing stop
+                    if gain_from_top <= swap_threshold:
                         swap_candidates.append({
                             'target_token': target_token,
                             'current_eq': current_eq,
@@ -466,14 +457,17 @@ class CryptoTrailingStopApp:
                 
                 if slot['token'] in st.session_state.prices:
                     current_usdt = slot['quantity'] * st.session_state.prices[slot['token']].bid_price
-                    baseline_usdt = slot.get('baseline_usdt', current_usdt)
-                    change_percent = ((current_usdt - baseline_usdt) / baseline_usdt * 100) if baseline_usdt > 0 else 0
+                    baseline_quantity = slot.get('baseline_quantity', slot['quantity'])
+                    current_quantity = slot['quantity']
+                    
+                    # Oblicz zmianę ilości od baseline
+                    quantity_change = ((current_quantity - baseline_quantity) / baseline_quantity * 100) if baseline_quantity > 0 else 0
                     
                     col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
-                        delta_color = "normal" if change_percent >= 0 else "inverse"
-                        delta_value = f"{change_percent:+.2f}%"
+                        delta_color = "normal" if quantity_change >= 0 else "inverse"
+                        delta_value = f"{quantity_change:+.2f}%"
                         st.metric(
                             label="Current Value",
                             value=f"{current_usdt:.2f} USDT",
@@ -483,37 +477,21 @@ class CryptoTrailingStopApp:
                     
                     with col2:
                         st.metric(
-                            label="Quantity",
-                            value=f"{slot['quantity']:.6f} {slot['token']}"
+                            label="Current Quantity",
+                            value=f"{current_quantity:.6f} {slot['token']}"
                         )
                     
                     with col3:
                         st.metric(
-                            label="Baseline Value",
-                            value=f"{baseline_usdt:.2f} USDT"
+                            label="Baseline Quantity",
+                            value=f"{baseline_quantity:.6f} {slot['token']}"
                         )
                     
                     with col4:
                         st.metric(
-                            label="Change vs Baseline",
-                            value=f"{change_percent:+.2f}%"
+                            label="Quantity Change",
+                            value=f"{quantity_change:+.2f}%"
                         )
-                    
-                    # Wykres ilościowy
-                    if 'quantity_history' in slot and len(slot['quantity_history']) > 1:
-                        st.subheader("Quantity Accumulation History")
-                        chart_data = pd.DataFrame({
-                            'Quantity': slot['quantity_history'],
-                            'Time': range(len(slot['quantity_history']))
-                        })
-                        st.line_chart(
-                            chart_data, 
-                            x='Time', 
-                            y='Quantity',
-                            use_container_width=True
-                        )
-                    else:
-                        st.info("No history data yet")
                         
                 else:
                     st.error(f"❌ No price data for {slot['token']}")
@@ -555,12 +533,11 @@ class CryptoTrailingStopApp:
             top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
             top_eq = float(top_eq) if top_eq else 0.0
 
-            current_gain = slot.get('current_gain', {}).get(token, 0.0)  # Gain od top!
-            max_gain = slot.get('max_gain', {}).get(token, 0.0)
+            current_gain = slot.get('current_gain', {}).get(token, 0.0)  # Gain % od top
+            max_gain = slot.get('max_gain', {}).get(token, 0.0)         # Max gain % od top
 
-            # Oblicz zmiany
+            # Oblicz zmianę od baseline (tylko do informacji)
             change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0.0
-            change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0.0
 
             # Status
             status = ""
@@ -568,9 +545,11 @@ class CryptoTrailingStopApp:
                 status = "🔵 Current Token"
             elif token == best_pair_token and best_pair_gain >= 0.5:
                 status = f"⭐ Best Candidate ({best_pair_gain:.2f}%)"
-            elif change_from_top >= -1:
+            elif current_gain >= 0:
+                status = "🟢 Above Top"
+            elif current_gain >= -1:
                 status = "🟢 Good Position"
-            elif change_from_top >= -3:
+            elif current_gain >= -3:
                 status = "🟡 Watch"
             else:
                 status = "🔴 Poor Position"
@@ -581,9 +560,8 @@ class CryptoTrailingStopApp:
                 'Początkowy': baseline_eq,
                 'Δ Od początku': change_from_baseline,
                 'Top': top_eq,
-                'Δ Od top': change_from_top,  # To jest current_gain!
-                'Current Gain': current_gain,  # Gain od top
-                'Max Wzrost': max_gain,       # Max gain od top
+                'Gain %': current_gain,  # Gain % od top (to samo co Δ Od top)
+                'Max Wzrost': max_gain,  # Max gain % od top
                 'Status': status
             })
 
@@ -599,8 +577,7 @@ class CryptoTrailingStopApp:
                 'Początkowy': st.column_config.NumberColumn(format="%.6f"),
                 'Δ Od początku': st.column_config.NumberColumn(format="%+.2f%%"),
                 'Top': st.column_config.NumberColumn(format="%.6f"),
-                'Δ Od top': st.column_config.NumberColumn(format="%+.2f%%"),
-                'Current Gain': st.column_config.NumberColumn(format="%+.2f%%"),
+                'Gain %': st.column_config.NumberColumn(format="%+.2f%%"),
                 'Max Wzrost': st.column_config.NumberColumn(format="%+.2f%%"),
             }
         )
