@@ -39,44 +39,6 @@ class CryptoTrailingStopApp:
             'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
         ]
 
-    def format_quantity(self, quantity: float, price: float) -> str:
-        """Formatuje ilość tokena na podstawie jego ceny"""
-        if price >= 1000:
-            return f"{quantity:.2f}"
-        elif price >= 100:
-            return f"{quantity:.4f}"
-        elif price >= 10:
-            return f"{quantity:.5f}"
-        elif price >= 1:
-            return f"{quantity:.6f}"
-        elif price >= 0.1:
-            return f"{quantity:.6f}"
-        elif price >= 0.01:
-            return f"{quantity:.6f}"
-        elif price >= 0.001:
-            return f"{quantity:.6f}"
-        else:
-            return f"{quantity:.8f}"
-
-    def format_price(self, price: float) -> str:
-        """Formatuje cenę na podstawie jej wartości"""
-        if price >= 1000:
-            return f"{price:.2f}"
-        elif price >= 100:
-            return f"{price:.3f}"
-        elif price >= 10:
-            return f"{price:.4f}"
-        elif price >= 1:
-            return f"{price:.5f}"
-        elif price >= 0.1:
-            return f"{price:.6f}"
-        elif price >= 0.01:
-            return f"{price:.6f}"
-        elif price >= 0.001:
-            return f"{price:.6f}"
-        else:
-            return f"{price:.8f}"
-
     # ================== API Helpers ==================
     def test_connection(self):
         try:
@@ -140,39 +102,33 @@ class CryptoTrailingStopApp:
         st.session_state.portfolio = []
         st.session_state.trades = []
         usdt_per_slot = usdt_amount / 5
-        
         for token in available_tokens:
             token_price = st.session_state.prices[token].ask_price
             quantity = (usdt_per_slot / token_price) * (1 - self.fee_rate)
-            
-            # Dla każdego slotu tworzymy baseline tylko dla aktualnego tokena
-            baseline_quantity = quantity  # Zapisujemy początkową ilość
-            
-            slot = {
-                'token': token,
-                'quantity': quantity,
-                'baseline_quantity': baseline_quantity,  # Tylko dla aktualnego tokena
-                'usdt_value': quantity * st.session_state.prices[token].bid_price,
-                'quantity_history': [quantity],
-                'timestamp_history': [datetime.now()],
-                # Pola dla matrycy trailing stop
-                'baseline': {},  # Dla innych tokenów w matrycy
-                'top_equivalent': {},  # Dla innych tokenów w matrycy
-                'current_gain': {},  # Dla innych tokenów w matrycy
-                'max_gain': {}  # Dla innych tokenów w matrycy
-            }
-            
-            # Inicjalizacja matrycy dla wszystkich tokenów
+            baseline = {}
+            top_equivalent = {}
+            current_gain = {}
+            max_gain = {}
             for t in self.tokens_to_track:
                 if t in st.session_state.prices:
                     eq = self.calculate_equivalent(token, t, quantity)
-                    slot['baseline'][t] = eq
-                    slot['top_equivalent'][t] = eq
-                    slot['current_gain'][t] = 0.0
-                    slot['max_gain'][t] = 0.0
-            
+                    baseline[t] = eq  # Zapisujemy tylko raz przy inicjacji
+                    top_equivalent[t] = eq  # Top początkowo równy baseline
+                    current_gain[t] = 0.0
+                    max_gain[t] = 0.0
+            slot = {
+                'token': token,
+                'quantity': quantity,
+                'baseline': baseline,  # NIGDY nie aktualizowane po inicjacji
+                'top_equivalent': top_equivalent,  # Aktualizowane tylko przy swapie
+                'current_gain': current_gain,
+                'max_gain': max_gain,
+                'usdt_value': quantity * st.session_state.prices[token].bid_price,
+                'baseline_usdt': usdt_per_slot,
+                'quantity_history': [quantity],
+                'timestamp_history': [datetime.now()]
+            }
             st.session_state.portfolio.append(slot)
-        
         self.save_data()
         st.success(f"✅ Portfolio initialized: {usdt_amount} USDT → 5 slots")
         return True
@@ -211,131 +167,67 @@ class CryptoTrailingStopApp:
                     slot['quantity_history'] = [slot['quantity']]
                 if 'timestamp_history' not in slot:
                     slot['timestamp_history'] = [datetime.now()]
-                if 'baseline_quantity' not in slot:
-                    slot['baseline_quantity'] = slot['quantity']
-                if 'baseline' not in slot:
-                    slot['baseline'] = {}
-                if 'top_equivalent' not in slot:
-                    slot['top_equivalent'] = {}
-                if 'current_gain' not in slot:
-                    slot['current_gain'] = {}
-                if 'max_gain' not in slot:
-                    slot['max_gain'] = {}
+                if 'baseline_usdt' not in slot:
+                    # Oblicz baseline_usdt na podstawie aktualnej ceny
+                    if slot['token'] in st.session_state.prices:
+                        current_price = st.session_state.prices[slot['token']].bid_price
+                        slot['baseline_usdt'] = slot['quantity'] * current_price
+                    else:
+                        slot['baseline_usdt'] = 0.0
 
     # ================== Load/Save ==================
     def load_data(self):
         try:
             if os.path.exists(self.data_file):
-                with open(self.data_file, 'r', encoding='utf-8') as f:
+                with open(self.data_file, 'r') as f:
                     data = json.load(f)
-                
-                # Sprawdź czy dane mają poprawny format
-                if not isinstance(data, dict):
-                    st.error("❌ Invalid data format in file")
-                    return {'portfolio': [], 'trades': []}
-                
                 trades = []
                 for t in data.get('trades', []):
-                    try:
-                        trades.append({
-                            'timestamp': datetime.fromisoformat(t['timestamp']),
-                            'from_token': t['from_token'],
-                            'to_token': t['to_token'],
-                            'from_quantity': float(t['from_quantity']),
-                            'to_quantity': float(t['to_quantity']),
-                            'slot': int(t['slot']),
-                            'max_gain': float(t.get('max_gain', 0.0)),
-                            'reason': t.get('reason', '')
-                        })
-                    except (KeyError, ValueError, TypeError) as e:
-                        st.warning(f"⚠️ Skipping invalid trade record: {e}")
-                        continue
+                    trades.append({
+                        'timestamp': datetime.fromisoformat(t['timestamp']),
+                        'from_token': t['from_token'],
+                        'to_token': t['to_token'],
+                        'from_quantity': t['from_quantity'],
+                        'to_quantity': t['to_quantity'],
+                        'slot': t['slot'],
+                        'max_gain': t.get('max_gain', 0.0),
+                        'reason': t.get('reason', '')
+                    })
                 
                 # Dodaj brakujące pola do załadowanego portfolio
                 portfolio = data.get('portfolio', [])
                 for slot in portfolio:
-                    if not isinstance(slot, dict):
-                        continue
                     if 'quantity_history' not in slot:
-                        slot['quantity_history'] = [slot.get('quantity', 0)]
+                        slot['quantity_history'] = [slot['quantity']]
                     if 'timestamp_history' not in slot:
                         slot['timestamp_history'] = [datetime.now()]
-                    if 'baseline_quantity' not in slot:
-                        slot['baseline_quantity'] = slot.get('quantity', 0)
-                    if 'baseline' not in slot:
-                        slot['baseline'] = {}
-                    if 'top_equivalent' not in slot:
-                        slot['top_equivalent'] = {}
-                    if 'current_gain' not in slot:
-                        slot['current_gain'] = {}
-                    if 'max_gain' not in slot:
-                        slot['max_gain'] = {}
+                    if 'baseline_usdt' not in slot:
+                        slot['baseline_usdt'] = 0.0
                 
                 return {'portfolio': portfolio, 'trades': trades}
-                
-        except json.JSONDecodeError as e:
-            st.error(f"❌ JSON decode error: {e}")
-            # Jeśli plik jest uszkodzony, utwórz backup i zacznij od nowa
-            self.create_backup_and_reset()
         except Exception as e:
-            st.error(f"❌ Error loading data: {e}")
-        
+            st.error(f"❌ {e}")
         return {'portfolio': [], 'trades': []}
-
-    def create_backup_and_reset(self):
-        """Tworzy backup uszkodzonego pliku i resetuje dane"""
-        try:
-            if os.path.exists(self.data_file):
-                backup_file = f"{self.data_file}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                os.rename(self.data_file, backup_file)
-                st.warning(f"⚠️ Created backup of corrupted file: {backup_file}")
-        except Exception as e:
-            st.error(f"❌ Backup creation failed: {e}")
 
     def save_data(self):
         try:
-            # Przygotuj dane do zapisu - konwersja na typy podstawowe
             data = {
-                'portfolio': [],
-                'trades': []
-            }
-            
-            # Zapisz portfolio
-            for slot in st.session_state.portfolio:
-                portfolio_slot = {
-                    'token': slot['token'],
-                    'quantity': float(slot['quantity']),
-                    'baseline_quantity': float(slot.get('baseline_quantity', 0)),
-                    'usdt_value': float(slot.get('usdt_value', 0)),
-                    'quantity_history': [float(q) for q in slot.get('quantity_history', [])],
-                    'timestamp_history': [t.isoformat() for t in slot.get('timestamp_history', [])],
-                    'baseline': {k: float(v) for k, v in slot.get('baseline', {}).items()},
-                    'top_equivalent': {k: float(v) for k, v in slot.get('top_equivalent', {}).items()},
-                    'current_gain': {k: float(v) for k, v in slot.get('current_gain', {}).items()},
-                    'max_gain': {k: float(v) for k, v in slot.get('max_gain', {}).items()}
-                }
-                data['portfolio'].append(portfolio_slot)
-            
-            # Zapisz trades
-            for t in st.session_state.trades:
-                trade = {
+                'portfolio': st.session_state.portfolio,
+                'trades': [{
                     'timestamp': t['timestamp'].isoformat(),
                     'from_token': t['from_token'],
                     'to_token': t['to_token'],
-                    'from_quantity': float(t['from_quantity']),
-                    'to_quantity': float(t['to_quantity']),
-                    'slot': int(t['slot']),
-                    'max_gain': float(t.get('max_gain', 0.0)),
+                    'from_quantity': t['from_quantity'],
+                    'to_quantity': t['to_quantity'],
+                    'slot': t['slot'],
+                    'max_gain': t.get('max_gain', 0.0),
                     'reason': t.get('reason', '')
-                }
-                data['trades'].append(trade)
-            
-            # Zapisz do pliku
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-                
+                } for t in st.session_state.trades]
+            }
+            with open(self.data_file, 'w') as f:
+                json.dump(data, f, indent=2)
         except Exception as e:
-            st.error(f"❌ Save error: {e}")
+            st.error(f"❌ {e}")
 
     # ================== Equivalents ==================
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
@@ -383,30 +275,34 @@ class CryptoTrailingStopApp:
                 if current_eq <= 0:
                     continue
                 
+                # Pobierz baseline (NIGDY nieaktualizowany po inicjacji)
+                baseline_eq = slot['baseline'].get(target_token, current_eq)
+                
                 # Pobierz top equivalent (aktualizowany tylko przy swapie)
                 top_eq = slot['top_equivalent'].get(target_token, current_eq)
                 
-                # Oblicz gain % od top
+                # Oblicz gain od baseline (tylko do wyświetlania)
+                gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+                
+                # Oblicz gain od top (do logiki trailing stop)
                 gain_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
                 
-                # Aktualizuj current_gain
-                slot['current_gain'][target_token] = gain_from_top
+                # Aktualizuj current_gain dla wyświetlania
+                slot['current_gain'][target_token] = gain_from_top  # Używamy gain_from_top dla trailing stop!
                 
-                # Aktualizuj max_gain tylko jeśli gain_from_top jest wyższy niż 0.5%
-                # i jest wyższy niż poprzedni max_gain
+                # Aktualizuj max_gain tylko jeśli gain_from_top jest wyższy
                 prev_max = slot['max_gain'].get(target_token, 0.0)
-                if gain_from_top >= 0.5 and gain_from_top > prev_max:
+                if gain_from_top > prev_max:
                     slot['max_gain'][target_token] = gain_from_top
                 
                 current_max_gain = slot['max_gain'].get(target_token, 0.0)
                 
-                # Sprawdź warunki trailing stop tylko jeśli max_gain >= 0.5%
-                if current_max_gain >= 0.5:
+                # Sprawdź warunki trailing stop
+                if current_max_gain >= 0.5:  # Minimalny próg do aktywacji trailing stop
                     ts = self.get_trailing_stop_level(current_max_gain)
                     swap_threshold = current_max_gain - ts
                     
-                    # Sprawdź czy gain spadł poniżej progu trailing stop
-                    if gain_from_top <= swap_threshold:
+                    if gain_from_top <= swap_threshold and current_eq > 0:
                         swap_candidates.append({
                             'target_token': target_token,
                             'current_eq': current_eq,
@@ -467,10 +363,9 @@ class CryptoTrailingStopApp:
             'reason': f'Trailing Stop triggered (max_gain={max_gain:.2f}%)'
         }
 
-        # WYMIANA TOKENA - aktualizujemy baseline dla nowego tokena
+        # WYMIANA TOKENA
         slot['token'] = target_token
         slot['quantity'] = to_qty
-        slot['baseline_quantity'] = to_qty  # Reset baseline dla nowego tokena!
 
         # AKTUALIZACJA TOP EQUIVALENT - TYLKO PRZY SWAPIE!
         for token in self.tokens_to_track:
@@ -526,8 +421,7 @@ class CryptoTrailingStopApp:
                 available_tokens = list(st.session_state.prices.keys()) if hasattr(st.session_state, 'prices') else []
                 available_tokens.sort()
                 selected_tokens = st.multiselect("Select 5 tokens:", available_tokens,
-                                                 default=available_tokens[:5] if len(available_tokens) >= 5 else available_tokens, 
-                                                 max_selections=5)
+                                                 default=available_tokens[:5], max_selections=5)
                 if st.button("🏁 Initialize Portfolio", use_container_width=True):
                     if len(selected_tokens)==5:
                         self.initialize_portfolio_from_usdt(usdt_amount, selected_tokens)
@@ -571,19 +465,15 @@ class CryptoTrailingStopApp:
                 st.subheader(f"Slot {idx+1} - {slot['token']}")
                 
                 if slot['token'] in st.session_state.prices:
-                    current_price = st.session_state.prices[slot['token']].bid_price
-                    current_usdt = slot['quantity'] * current_price
-                    baseline_quantity = slot.get('baseline_quantity', slot['quantity'])
-                    current_quantity = slot['quantity']
-                    
-                    # Oblicz zmianę ilości od baseline
-                    quantity_change = ((current_quantity - baseline_quantity) / baseline_quantity * 100) if baseline_quantity > 0 else 0
+                    current_usdt = slot['quantity'] * st.session_state.prices[slot['token']].bid_price
+                    baseline_usdt = slot.get('baseline_usdt', current_usdt)
+                    change_percent = ((current_usdt - baseline_usdt) / baseline_usdt * 100) if baseline_usdt > 0 else 0
                     
                     col1, col2, col3, col4 = st.columns(4)
                     
                     with col1:
-                        delta_color = "normal" if quantity_change >= 0 else "inverse"
-                        delta_value = f"{quantity_change:+.2f}%"
+                        delta_color = "normal" if change_percent >= 0 else "inverse"
+                        delta_value = f"{change_percent:+.2f}%"
                         st.metric(
                             label="Current Value",
                             value=f"{current_usdt:.2f} USDT",
@@ -592,25 +482,38 @@ class CryptoTrailingStopApp:
                         )
                     
                     with col2:
-                        # Formatowanie ilości z odpowiednią liczbą miejsc po przecinku
-                        current_quantity_str = self.format_quantity(current_quantity, current_price)
                         st.metric(
-                            label="Current Quantity",
-                            value=f"{current_quantity_str} {slot['token']}"
+                            label="Quantity",
+                            value=f"{slot['quantity']:.6f} {slot['token']}"
                         )
                     
                     with col3:
-                        baseline_quantity_str = self.format_quantity(baseline_quantity, current_price)
                         st.metric(
-                            label="Baseline Quantity",
-                            value=f"{baseline_quantity_str} {slot['token']}"
+                            label="Baseline Value",
+                            value=f"{baseline_usdt:.2f} USDT"
                         )
                     
                     with col4:
                         st.metric(
-                            label="Quantity Change",
-                            value=f"{quantity_change:+.2f}%"
+                            label="Change vs Baseline",
+                            value=f"{change_percent:+.2f}%"
                         )
+                    
+                    # Wykres ilościowy
+                    if 'quantity_history' in slot and len(slot['quantity_history']) > 1:
+                        st.subheader("Quantity Accumulation History")
+                        chart_data = pd.DataFrame({
+                            'Quantity': slot['quantity_history'],
+                            'Time': range(len(slot['quantity_history']))
+                        })
+                        st.line_chart(
+                            chart_data, 
+                            x='Time', 
+                            y='Quantity',
+                            use_container_width=True
+                        )
+                    else:
+                        st.info("No history data yet")
                         
                 else:
                     st.error(f"❌ No price data for {slot['token']}")
@@ -623,10 +526,7 @@ class CryptoTrailingStopApp:
             self.render_slot_with_history(idx, slot)
 
     def render_slot_with_history(self, slot_idx: int, slot: dict):
-        current_price = st.session_state.prices[slot['token']].bid_price if slot['token'] in st.session_state.prices else 0
-        current_quantity_str = self.format_quantity(slot['quantity'], current_price)
-        
-        st.subheader(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({current_quantity_str})")
+        st.subheader(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({slot['quantity']:.6f})")
         self.render_slot_matrix(slot_idx, slot)
         self.render_slot_trade_history(slot_idx)
 
@@ -655,11 +555,12 @@ class CryptoTrailingStopApp:
             top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
             top_eq = float(top_eq) if top_eq else 0.0
 
-            current_gain = slot.get('current_gain', {}).get(token, 0.0)  # Gain % od top
-            max_gain = slot.get('max_gain', {}).get(token, 0.0)         # Max gain % od top
+            current_gain = slot.get('current_gain', {}).get(token, 0.0)  # Gain od top!
+            max_gain = slot.get('max_gain', {}).get(token, 0.0)
 
-            # Oblicz zmianę od baseline (tylko do informacji)
+            # Oblicz zmiany
             change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0.0
+            change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0.0
 
             # Status
             status = ""
@@ -667,29 +568,22 @@ class CryptoTrailingStopApp:
                 status = "🔵 Current Token"
             elif token == best_pair_token and best_pair_gain >= 0.5:
                 status = f"⭐ Best Candidate ({best_pair_gain:.2f}%)"
-            elif current_gain >= 0:
-                status = "🟢 Above Top"
-            elif current_gain >= -1:
+            elif change_from_top >= -1:
                 status = "🟢 Good Position"
-            elif current_gain >= -3:
+            elif change_from_top >= -3:
                 status = "🟡 Watch"
             else:
                 status = "🔴 Poor Position"
 
-            # Formatowanie liczb z odpowiednią precyzją
-            token_price = st.session_state.prices[token].bid_price if token in st.session_state.prices else 0
-            current_eq_str = self.format_quantity(current_eq, token_price)
-            baseline_eq_str = self.format_quantity(baseline_eq, token_price)
-            top_eq_str = self.format_quantity(top_eq, token_price)
-            
             matrix_data.append({
                 'Token': token,
-                'Aktualny': current_eq_str,
-                'Początkowy': baseline_eq_str,
-                'Δ Od początku': f"{change_from_baseline:+.2f}%",
-                'Top': top_eq_str,
-                'Gain %': f"{current_gain:+.2f}%",
-                'Max Wzrost': f"{max_gain:+.2f}%",
+                'Aktualny': current_eq,
+                'Początkowy': baseline_eq,
+                'Δ Od początku': change_from_baseline,
+                'Top': top_eq,
+                'Δ Od top': change_from_top,  # To jest current_gain!
+                'Current Gain': current_gain,  # Gain od top
+                'Max Wzrost': max_gain,       # Max gain od top
                 'Status': status
             })
 
@@ -699,7 +593,16 @@ class CryptoTrailingStopApp:
         st.dataframe(
             df,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
+            column_config={
+                'Aktualny': st.column_config.NumberColumn(format="%.6f"),
+                'Początkowy': st.column_config.NumberColumn(format="%.6f"),
+                'Δ Od początku': st.column_config.NumberColumn(format="%+.2f%%"),
+                'Top': st.column_config.NumberColumn(format="%.6f"),
+                'Δ Od top': st.column_config.NumberColumn(format="%+.2f%%"),
+                'Current Gain': st.column_config.NumberColumn(format="%+.2f%%"),
+                'Max Wzrost': st.column_config.NumberColumn(format="%+.2f%%"),
+            }
         )
 
     def render_slot_trade_history(self, idx):
@@ -708,15 +611,11 @@ class CryptoTrailingStopApp:
             st.subheader(f"📋 History Slot {idx+1}")
             data = []
             for t in trades[-10:]:
-                # Formatowanie ilości z odpowiednią precyzją
-                to_token_price = st.session_state.prices[t['to_token']].bid_price if t['to_token'] in st.session_state.prices else 0
-                to_quantity_str = self.format_quantity(t['to_quantity'], to_token_price)
-                
                 data.append({
                     'Data': t['timestamp'].strftime('%H:%M:%S'),
                     'Z': t['from_token'],
                     'Na': t['to_token'],
-                    'Ilość': to_quantity_str,
+                    'Ilość': f"{t['to_quantity']:.6f}",
                     'Max Wzrost': f"{t['max_gain']:.2f}%",
                     'Powód': t['reason']
                 })
