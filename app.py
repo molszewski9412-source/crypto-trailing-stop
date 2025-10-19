@@ -303,7 +303,7 @@ class CryptoTrailingStopApp:
         if not st.session_state.tracking or not st.session_state.portfolio:
             return
         
-        # ✅ PIERWSZE: Zaktualizuj gain % dla WSZYSTKICH slotów i tokenów
+        # PIERWSZE: Zaktualizuj gain % dla WSZYSTKICH slotów i tokenów
         for idx, slot in enumerate(st.session_state.portfolio):
             from_token = slot['token']
             qty = slot['quantity']
@@ -329,7 +329,7 @@ class CryptoTrailingStopApp:
                 if gain_from_top > slot['max_gain'].get(target_token, 0.0):
                     slot['max_gain'][target_token] = gain_from_top
         
-        # ✅ DOPIERO POTEM: Sprawdzaj warunki trailing stop
+        # DOPIERO POTEM: Sprawdzaj warunki trailing stop
         slot_candidates = {}
         
         for idx, slot in enumerate(st.session_state.portfolio):
@@ -426,7 +426,7 @@ class CryptoTrailingStopApp:
                 if new_equiv > current_top:
                     slot['top_equivalent'][token] = new_equiv
                 
-                # ✅ OBLICZ I AKTUALIZUJ gain % DLA WSZYSTKICH TOKENÓW PO SWAPIE
+                # Oblicz i zaktualizuj gain % dla wszystkich tokenów po swapie
                 top_eq = slot['top_equivalent'].get(token, new_equiv)
                 gain_from_top = ((new_equiv - top_eq) / top_eq * 100) if top_eq > 0 else 0
                 slot['current_gain'][token] = gain_from_top
@@ -569,12 +569,6 @@ class CryptoTrailingStopApp:
         self.render_slot_trade_history(slot_idx)
 
     def render_slot_matrix(self, slot_idx: int, slot: dict):
-        # Ensure required dict fields exist
-        slot.setdefault('baseline', {})
-        slot.setdefault('top_equivalent', {})
-        slot.setdefault('current_gain', {})
-        slot.setdefault('max_gain', {})
-
         matrix_data = []
         best_pair_gain = -999.0
         best_pair_token = None
@@ -590,19 +584,19 @@ class CryptoTrailingStopApp:
             # Oblicz aktualny ekwiwalent
             current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
             current_eq = float(current_eq) if current_eq else 0.0
-
+            
             # Pobierz baseline (NIGDY nieaktualizowany)
             baseline_eq = slot.get('baseline', {}).get(token, current_eq)
             baseline_eq = float(baseline_eq) if baseline_eq else 0.0
-
+            
             # Pobierz top (aktualizowany tylko przy swapie)
             top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
             top_eq = float(top_eq) if top_eq else 0.0
 
-            # ✅ OBLICZ GAIN % NA BIEŻĄCO - NIE BIERZ ZAPISANEGO!
+            # OBLICZ GAIN % NA BIEŻĄCO - NIE BIERZ ZAPISANEGO!
             current_gain = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0.0
-
-            # ✅ AKTUALIZUJ current_gain w slocie (dla trailing stop)
+            
+            # AKTUALIZUJ current_gain w slocie (dla trailing stop)
             slot['current_gain'][token] = current_gain
 
             max_gain = slot.get('max_gain', {}).get(token, 0.0)
@@ -633,78 +627,6 @@ class CryptoTrailingStopApp:
                 'Top': top_eq,
                 'Gain %': current_gain,  # Używamy świeżo obliczonego
                 'Max Wzrost': max_gain,
-                'Status': status
-            })
-
-        df = pd.DataFrame(matrix_data)
-
-        # Sortowalna tabela
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                'Aktualny': st.column_config.NumberColumn(format="%.6f"),
-                'Początkowy': st.column_config.NumberColumn(format="%.6f"),
-                'Δ Od początku': st.column_config.NumberColumn(format="%+.2f%%"),
-                'Top': st.column_config.NumberColumn(format="%.6f"),
-                'Gain %': st.column_config.NumberColumn(format="%+.2f%%"),
-                'Max Wzrost': st.column_config.NumberColumn(format="%+.2f%%"),
-            }
-        )
-        matrix_data = []
-        best_pair_gain = -999.0
-        best_pair_token = None
-
-        # Znajdź najlepszą parę
-        for token in self.tokens_to_track:
-            current_max_gain = slot.get('max_gain', {}).get(token, 0.0)
-            if current_max_gain > best_pair_gain:
-                best_pair_gain = current_max_gain
-                best_pair_token = token
-
-        for token in self.tokens_to_track:
-            # Oblicz aktualny ekwiwalent
-            current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-            current_eq = float(current_eq) if current_eq else 0.0
-            
-            # Pobierz baseline (NIGDY nieaktualizowany)
-            baseline_eq = slot.get('baseline', {}).get(token, current_eq)
-            baseline_eq = float(baseline_eq) if baseline_eq else 0.0
-            
-            # Pobierz top (aktualizowany tylko przy swapie)
-            top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
-            top_eq = float(top_eq) if top_eq else 0.0
-
-            current_gain = slot.get('current_gain', {}).get(token, 0.0)  # Gain % od top
-            max_gain = slot.get('max_gain', {}).get(token, 0.0)         # Max gain % od top
-
-            # Oblicz zmianę od baseline (tylko do informacji)
-            change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0.0
-
-            # Status
-            status = ""
-            if token == slot['token']:
-                status = "🔵 Current Token"
-            elif token == best_pair_token and best_pair_gain >= 0.5:
-                status = f"⭐ Best Candidate ({best_pair_gain:.2f}%)"
-            elif current_gain >= 0:
-                status = "🟢 Above Top"
-            elif current_gain >= -1:
-                status = "🟢 Good Position"
-            elif current_gain >= -3:
-                status = "🟡 Watch"
-            else:
-                status = "🔴 Poor Position"
-
-            matrix_data.append({
-                'Token': token,
-                'Aktualny': current_eq,
-                'Początkowy': baseline_eq,
-                'Δ Od początku': change_from_baseline,
-                'Top': top_eq,
-                'Gain %': current_gain,  # Gain % od top (to samo co Δ Od top)
-                'Max Wzrost': max_gain,  # Max gain % od top
                 'Status': status
             })
 
