@@ -318,12 +318,12 @@ class CryptoTrailingStopApp:
                 if target_token == from_token or target_token in current_tokens:
                     continue
                 
-                # Oblicz aktualny ekwiwalent (teoretyczny: gdybym swapnął na target_token)
+                # Oblicz aktualny ekwiwalent
                 current_eq = self.calculate_equivalent(from_token, target_token, qty)
                 if current_eq <= 0:
                     continue
                 
-                # ✅ Pobierz top equivalent (NIE aktualizujemy go tutaj - tylko przy swapie)
+                # Pobierz top equivalent (NIE aktualizujemy tutaj)
                 top_eq = slot['top_equivalent'].get(target_token, current_eq)
                 
                 # Oblicz gain % od top
@@ -332,26 +332,24 @@ class CryptoTrailingStopApp:
                 # Aktualizuj current_gain
                 slot['current_gain'][target_token] = gain_from_top
                 
-                # ✅ AKTUALIZUJ max_gain jeśli gain_from_top jest wyższy niż poprzedni max
+                # Aktualizuj max_gain jeśli gain_from_top jest wyższy niż poprzedni max
                 prev_max = slot['max_gain'].get(target_token, 0.0)
                 if gain_from_top > prev_max:
                     slot['max_gain'][target_token] = gain_from_top
                 
                 current_max_gain = slot['max_gain'].get(target_token, 0.0)
                 
-                # Sprawdź warunki trailing stop tylko jeśli max_gain >= 0.5%
+                # Sprawdź warunki trailing stop
                 if current_max_gain >= 0.5:
                     ts = self.get_trailing_stop_level(current_max_gain)
                     swap_threshold = current_max_gain - ts
                     
-                    # Sprawdź czy gain spadł poniżej progu trailing stop
                     if gain_from_top <= swap_threshold:
                         swap_candidates.append({
                             'target_token': target_token,
                             'current_eq': current_eq,
                             'max_gain': current_max_gain,
-                            'gain_from_top': gain_from_top,
-                            'top_eq': top_eq  # Dodajemy dla debugowania
+                            'gain_from_top': gain_from_top
                         })
             
             if swap_candidates:
@@ -386,9 +384,6 @@ class CryptoTrailingStopApp:
         # Aktualizacja historii ilości
         slot['quantity_history'].append(to_qty)
         slot['timestamp_history'].append(datetime.now())
-        if len(slot['quantity_history']) > 50:
-            slot['quantity_history'] = slot['quantity_history'][-50:]
-            slot['timestamp_history'] = slot['timestamp_history'][-50:]
 
         # ZAPIS TRADE
         trade = {
@@ -406,7 +401,7 @@ class CryptoTrailingStopApp:
         slot['token'] = target_token
         slot['quantity'] = to_qty
 
-        # ✅ AKTUALIZACJA TOP_EQUIVALENT - TYLKO PRZY SWAPIE!
+        # AKTUALIZACJA TOP_EQUIVALENT - TYLKO PRZY SWAPIE!
         for token in self.tokens_to_track:
             if token == target_token:
                 # Dla nowego tokena: top = dokładna ilość uzyskana w swapie
@@ -414,30 +409,21 @@ class CryptoTrailingStopApp:
                 slot['current_gain'][token] = 0.0
                 slot['max_gain'][token] = 0.0
             else:
-                # Dla innych tokenów: oblicz nowy ekwiwalent (teoretyczny)
+                # Dla innych tokenów: oblicz nowy ekwiwalent
                 new_equiv = self.calculate_equivalent(target_token, token, to_qty)
                 
-                # ✅ AKTUALIZUJ TOP_EQUIVALENT tylko jeśli nowy ekwiwalent jest wyższy niż dotychczasowy top
+                # Aktualizuj top_equivalent tylko jeśli nowy ekwiwalent jest wyższy
                 current_top = slot['top_equivalent'].get(token, 0.0)
                 if new_equiv > current_top:
                     slot['top_equivalent'][token] = new_equiv
-                    # Jeśli aktualizujemy top, to resetujemy max_gain dla tego tokena
-                    slot['max_gain'][token] = 0.0
                 
-                # Oblicz current_gain od nowego (lub starego) top
-                gain_from_top = ((new_equiv - slot['top_equivalent'][token]) / slot['top_equivalent'][token] * 100) if slot['top_equivalent'][token] > 0 else 0
-                slot['current_gain'][token] = gain_from_top
-                
-                # Aktualizuj max_gain jeśli current_gain jest wyższy
-                if gain_from_top > slot['max_gain'][token]:
-                    slot['max_gain'][token] = gain_from_top
+                # NIE resetujemy current_gain i max_gain - będą obliczone w następnym cyklu
+                # gain % zostanie automatycznie obliczony w check_and_execute_trades()
 
         st.session_state.trades.append(trade)
         self.save_data()
 
-        # ✅ DODAJ DEBUG INFO
-        st.success(f"💰 SWAP: {from_token} → {target_token} | Max gain: {max_gain:.2f}%")
-        st.info(f"🔍 DEBUG: Top equivalents updated for all tokens from new position")
+        st.toast(f"🔁 SWAP: {from_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
 
     # ================== UI ==================
     def render_sidebar(self):
