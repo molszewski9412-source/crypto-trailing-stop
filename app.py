@@ -174,55 +174,108 @@ class CryptoTrailingStopApp:
     def load_data(self):
         try:
             if os.path.exists(self.data_file):
-                with open(self.data_file, 'r') as f:
+                with open(self.data_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                
+                # Sprawdź czy dane mają poprawny format
+                if not isinstance(data, dict):
+                    st.error("❌ Invalid data format in file")
+                    return {'portfolio': [], 'trades': []}
+                
                 trades = []
                 for t in data.get('trades', []):
-                    trades.append({
-                        'timestamp': datetime.fromisoformat(t['timestamp']),
-                        'from_token': t['from_token'],
-                        'to_token': t['to_token'],
-                        'from_quantity': t['from_quantity'],
-                        'to_quantity': t['to_quantity'],
-                        'slot': t['slot'],
-                        'max_gain': t.get('max_gain', 0.0),
-                        'reason': t.get('reason', '')
-                    })
+                    try:
+                        trades.append({
+                            'timestamp': datetime.fromisoformat(t['timestamp']),
+                            'from_token': t['from_token'],
+                            'to_token': t['to_token'],
+                            'from_quantity': float(t['from_quantity']),
+                            'to_quantity': float(t['to_quantity']),
+                            'slot': int(t['slot']),
+                            'max_gain': float(t.get('max_gain', 0.0)),
+                            'reason': t.get('reason', '')
+                        })
+                    except (KeyError, ValueError, TypeError) as e:
+                        st.warning(f"⚠️ Skipping invalid trade record: {e}")
+                        continue
                 
                 # Dodaj brakujące pola do załadowanego portfolio
                 portfolio = data.get('portfolio', [])
                 for slot in portfolio:
+                    if not isinstance(slot, dict):
+                        continue
                     if 'quantity_history' not in slot:
-                        slot['quantity_history'] = [slot['quantity']]
+                        slot['quantity_history'] = [slot.get('quantity', 0)]
                     if 'timestamp_history' not in slot:
                         slot['timestamp_history'] = [datetime.now()]
                     if 'baseline_quantity' not in slot:
-                        slot['baseline_quantity'] = slot['quantity']
+                        slot['baseline_quantity'] = slot.get('quantity', 0)
                 
                 return {'portfolio': portfolio, 'trades': trades}
+                
+        except json.JSONDecodeError as e:
+            st.error(f"❌ JSON decode error: {e}")
+            # Jeśli plik jest uszkodzony, utwórz backup i zacznij od nowa
+            self.create_backup_and_reset()
         except Exception as e:
-            st.error(f"❌ {e}")
+            st.error(f"❌ Error loading data: {e}")
+        
         return {'portfolio': [], 'trades': []}
+
+    def create_backup_and_reset(self):
+        """Tworzy backup uszkodzonego pliku i resetuje dane"""
+        try:
+            if os.path.exists(self.data_file):
+                backup_file = f"{self.data_file}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                os.rename(self.data_file, backup_file)
+                st.warning(f"⚠️ Created backup of corrupted file: {backup_file}")
+        except Exception as e:
+            st.error(f"❌ Backup creation failed: {e}")
 
     def save_data(self):
         try:
+            # Przygotuj dane do zapisu - konwersja na typy podstawowe
             data = {
-                'portfolio': st.session_state.portfolio,
-                'trades': [{
+                'portfolio': [],
+                'trades': []
+            }
+            
+            # Zapisz portfolio
+            for slot in st.session_state.portfolio:
+                portfolio_slot = {
+                    'token': slot['token'],
+                    'quantity': float(slot['quantity']),
+                    'baseline': {k: float(v) for k, v in slot['baseline'].items()},
+                    'top_equivalent': {k: float(v) for k, v in slot['top_equivalent'].items()},
+                    'current_gain': {k: float(v) for k, v in slot['current_gain'].items()},
+                    'max_gain': {k: float(v) for k, v in slot['max_gain'].items()},
+                    'usdt_value': float(slot.get('usdt_value', 0)),
+                    'baseline_quantity': float(slot.get('baseline_quantity', 0)),
+                    'quantity_history': [float(q) for q in slot.get('quantity_history', [])],
+                    'timestamp_history': [t.isoformat() for t in slot.get('timestamp_history', [])]
+                }
+                data['portfolio'].append(portfolio_slot)
+            
+            # Zapisz trades
+            for t in st.session_state.trades:
+                trade = {
                     'timestamp': t['timestamp'].isoformat(),
                     'from_token': t['from_token'],
                     'to_token': t['to_token'],
-                    'from_quantity': t['from_quantity'],
-                    'to_quantity': t['to_quantity'],
-                    'slot': t['slot'],
-                    'max_gain': t.get('max_gain', 0.0),
+                    'from_quantity': float(t['from_quantity']),
+                    'to_quantity': float(t['to_quantity']),
+                    'slot': int(t['slot']),
+                    'max_gain': float(t.get('max_gain', 0.0)),
                     'reason': t.get('reason', '')
-                } for t in st.session_state.trades]
-            }
-            with open(self.data_file, 'w') as f:
-                json.dump(data, f, indent=2)
+                }
+                data['trades'].append(trade)
+            
+            # Zapisz do pliku
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                
         except Exception as e:
-            st.error(f"❌ {e}")
+            st.error(f"❌ Save error: {e}")
 
     # ================== Equivalents ==================
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
