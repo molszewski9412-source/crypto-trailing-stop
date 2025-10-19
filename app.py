@@ -31,13 +31,30 @@ class CryptoTrailingStopApp:
         self.fee_rate = 0.00025
         self.trailing_stop_levels = {0.5: 0.2, 1.0: 0.5, 2.0: 1.0, 5.0: 2.0}
         self.data_file = "trailing_stop_data.json"
+        
+        # Prawidłowe tickery z MEXC (tylko te które mają pary USDT)
         self.tokens_to_track = [
-            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
-            'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
-            'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
-            'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'XRPUSDT', 'DOTUSDT', 
+            'DOGEUSDT', 'AVAXUSDT', 'LTCUSDT', 'LINKUSDT', 'ATOMUSDT', 'XLMUSDT', 
+            'BCHUSDT', 'ALGOUSDT', 'FILUSDT', 'ETCUSDT', 'XTZUSDT', 'AAVEUSDT', 
+            'COMPUSDT', 'UNIUSDT', 'CRVUSDT', 'SUSHIUSDT', 'YFIUSDT', 'SNXUSDT', 
+            '1INCHUSDT', 'ZRXUSDT', 'TRXUSDT', 'VETUSDT', 'MATICUSDT', 'NEARUSDT', 
+            'ALICEUSDT', 'FTMUSDT', 'SANDUSDT', 'MANAUSDT', 'ENJUSDT', 'CHZUSDT', 
+            'AXSUSDT', 'GALAUSDT', 'APEUSDT', 'LDOUSDT', 'ARBUSDT', 'OPUSDT', 
+            'APTUSDT', 'SUIUSDT', 'SEIUSDT', 'INJUSDT', 'RNDRUSDT', 'IMXUSDT'
         ]
+
+    def get_token_symbol(self, full_symbol: str) -> str:
+        """Konwertuje pełny symbol (np. BTCUSDT) na ticker tokena (BTC)"""
+        if full_symbol.endswith('USDT'):
+            return full_symbol[:-4]
+        return full_symbol
+
+    def get_full_symbol(self, token: str) -> str:
+        """Konwertuje ticker tokena (BTC) na pełny symbol (BTCUSDT)"""
+        if not token.endswith('USDT'):
+            return f"{token}USDT"
+        return token
 
     # ================== API Helpers ==================
     def test_connection(self):
@@ -56,17 +73,26 @@ class CryptoTrailingStopApp:
                 st.error(f"❌ HTTP {r.status_code}")
                 return {}
             data = r.json()
-            usdt_pairs = {item['symbol']: item for item in data if item['symbol'].endswith('USDT')}
-            for token in self.tokens_to_track:
-                sym = f"{token}USDT"
-                if sym in usdt_pairs:
+            
+            # Filtruj tylko pary które nas interesują
+            available_pairs = {item['symbol']: item for item in data if item['symbol'] in self.tokens_to_track}
+            
+            for full_symbol in self.tokens_to_track:
+                if full_symbol in available_pairs:
                     try:
-                        bid = float(usdt_pairs[sym]['bidPrice'])
-                        ask = float(usdt_pairs[sym]['askPrice'])
+                        item = available_pairs[full_symbol]
+                        bid = float(item['bidPrice'])
+                        ask = float(item['askPrice'])
                         if bid <= 0 or ask <= 0 or bid > ask:
                             continue
-                        prices[token] = TokenInfo(symbol=token, bid_price=bid, ask_price=ask, last_update=datetime.now())
-                    except:
+                        token_symbol = self.get_token_symbol(full_symbol)
+                        prices[token_symbol] = TokenInfo(
+                            symbol=token_symbol, 
+                            bid_price=bid, 
+                            ask_price=ask, 
+                            last_update=datetime.now()
+                        )
+                    except (KeyError, ValueError, TypeError) as e:
                         continue
             return prices
         except Exception as e:
@@ -95,13 +121,19 @@ class CryptoTrailingStopApp:
         if usdt_amount <= 0:
             st.error("❌ USDT must be > 0")
             return False
+        
+        # Konwertuj wybrane tokeny na pełne symbole dla sprawdzenia dostępności
+        selected_full_symbols = [self.get_full_symbol(token) for token in selected_tokens]
         available_tokens = [t for t in selected_tokens if t in st.session_state.prices]
+        
         if len(available_tokens) < 5:
             st.error(f"❌ Not enough price data: {len(available_tokens)}/5")
             return False
+        
         st.session_state.portfolio = []
         st.session_state.trades = []
         usdt_per_slot = usdt_amount / 5
+        
         for token in available_tokens:
             token_price = st.session_state.prices[token].ask_price
             quantity = (usdt_per_slot / token_price) * (1 - self.fee_rate)
@@ -109,13 +141,16 @@ class CryptoTrailingStopApp:
             top_equivalent = {}
             current_gain = {}
             max_gain = {}
-            for t in self.tokens_to_track:
-                if t in st.session_state.prices:
-                    eq = self.calculate_equivalent(token, t, quantity)
-                    baseline[t] = eq  # Zapisujemy tylko raz przy inicjacji
-                    top_equivalent[t] = eq  # Top początkowo równy baseline
-                    current_gain[t] = 0.0
-                    max_gain[t] = 0.0
+            
+            for full_symbol in self.tokens_to_track:
+                target_token = self.get_token_symbol(full_symbol)
+                if target_token in st.session_state.prices:
+                    eq = self.calculate_equivalent(token, target_token, quantity)
+                    baseline[target_token] = eq  # Zapisujemy tylko raz przy inicjacji
+                    top_equivalent[target_token] = eq  # Top początkowo równy baseline
+                    current_gain[target_token] = 0.0
+                    max_gain[target_token] = 0.0
+            
             slot = {
                 'token': token,
                 'quantity': quantity,
@@ -129,6 +164,7 @@ class CryptoTrailingStopApp:
                 'timestamp_history': [datetime.now()]
             }
             st.session_state.portfolio.append(slot)
+        
         self.save_data()
         st.success(f"✅ Portfolio initialized: {usdt_amount} USDT → 5 slots")
         return True
@@ -281,10 +317,13 @@ class CryptoTrailingStopApp:
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
         if from_token == to_token:
             return quantity * (1 - self.fee_rate)
+        
         prices = st.session_state.prices
         if from_token not in prices or to_token not in prices:
             return 0.0
+        
         try:
+            # Używamy prawidłowych cen bid/ask
             usdt_value = quantity * prices[from_token].bid_price * (1 - self.fee_rate)
             equivalent = (usdt_value / prices[to_token].ask_price) * (1 - self.fee_rate)
             return equivalent
@@ -314,7 +353,9 @@ class CryptoTrailingStopApp:
             if qty <= 0 or from_token not in st.session_state.prices:
                 continue
             
-            for target_token in self.tokens_to_track:
+            for full_symbol in self.tokens_to_track:
+                target_token = self.get_token_symbol(full_symbol)
+                
                 if target_token == from_token or target_token in current_tokens:
                     continue
                 
@@ -412,7 +453,8 @@ class CryptoTrailingStopApp:
         slot['quantity'] = to_qty
 
         # AKTUALIZACJA TOP EQUIVALENT - TYLKO PRZY SWAPIE!
-        for token in self.tokens_to_track:
+        for full_symbol in self.tokens_to_track:
+            token = self.get_token_symbol(full_symbol)
             if token == target_token:
                 # Dla tokena docelowego: top = dokładna ilość uzyskana w swapie
                 slot['top_equivalent'][token] = to_qty
@@ -465,7 +507,8 @@ class CryptoTrailingStopApp:
                 available_tokens = list(st.session_state.prices.keys()) if hasattr(st.session_state, 'prices') else []
                 available_tokens.sort()
                 selected_tokens = st.multiselect("Select 5 tokens:", available_tokens,
-                                                 default=available_tokens[:5], max_selections=5)
+                                                 default=available_tokens[:5] if len(available_tokens) >= 5 else available_tokens, 
+                                                 max_selections=5)
                 if st.button("🏁 Initialize Portfolio", use_container_width=True):
                     if len(selected_tokens)==5:
                         self.initialize_portfolio_from_usdt(usdt_amount, selected_tokens)
@@ -567,13 +610,16 @@ class CryptoTrailingStopApp:
         best_pair_token = None
 
         # Znajdź najlepszą parę
-        for token in self.tokens_to_track:
+        for full_symbol in self.tokens_to_track:
+            token = self.get_token_symbol(full_symbol)
             current_max_gain = slot.get('max_gain', {}).get(token, 0.0)
             if current_max_gain > best_pair_gain:
                 best_pair_gain = current_max_gain
                 best_pair_token = token
 
-        for token in self.tokens_to_track:
+        for full_symbol in self.tokens_to_track:
+            token = self.get_token_symbol(full_symbol)
+            
             # Oblicz aktualny ekwiwalent
             current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
             current_eq = float(current_eq) if current_eq else 0.0
@@ -613,7 +659,7 @@ class CryptoTrailingStopApp:
                 'Początkowy': baseline_eq,
                 'Δ Od początku': change_from_baseline,
                 'Top': top_eq,
-                'Gain %': current_gain,  # Gain % od top (to samo co Δ Od top)
+                'Gain %': current_gain,  # Gain % od top
                 'Max Wzrost': max_gain,  # Max gain % od top
                 'Status': status
             })
