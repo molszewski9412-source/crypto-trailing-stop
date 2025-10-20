@@ -177,8 +177,16 @@ class CryptoSwapMatrixApp:
                 trades = []
                 for t in data.get('trades', []):
                     try:
+                        # Konwersja timestamp z string na datetime
+                        timestamp_str = t['timestamp']
+                        if 'T' in timestamp_str:
+                            timestamp = datetime.fromisoformat(timestamp_str)
+                        else:
+                            # Dla starych formatów daty
+                            timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                        
                         trades.append({
-                            'timestamp': datetime.fromisoformat(t['timestamp']),
+                            'timestamp': timestamp,
                             'from_token': t['from_token'],
                             'to_token': t['to_token'],
                             'from_quantity': float(t['from_quantity']),
@@ -195,15 +203,32 @@ class CryptoSwapMatrixApp:
                 for slot in portfolio:
                     if not isinstance(slot, dict):
                         continue
+                    
+                    # Konwersja timestamp_history z string na datetime
+                    if 'timestamp_history' in slot:
+                        new_timestamps = []
+                        for ts in slot['timestamp_history']:
+                            if isinstance(ts, str):
+                                try:
+                                    if 'T' in ts:
+                                        new_timestamps.append(datetime.fromisoformat(ts))
+                                    else:
+                                        new_timestamps.append(datetime.strptime(ts, '%Y-%m-%d %H:%M:%S'))
+                                except:
+                                    new_timestamps.append(datetime.now())
+                            else:
+                                new_timestamps.append(ts)
+                        slot['timestamp_history'] = new_timestamps
+                    else:
+                        slot['timestamp_history'] = [datetime.now()]
+                    
                     if 'quantity_history' not in slot:
                         slot['quantity_history'] = [slot.get('quantity', 0)]
-                    if 'timestamp_history' not in slot:
-                        slot['timestamp_history'] = [datetime.now()]
                     if 'baseline_quantity' not in slot:
                         slot['baseline_quantity'] = slot.get('quantity', 0)
                 
                 return {'portfolio': portfolio, 'trades': trades}
-                
+                    
         except json.JSONDecodeError as e:
             st.error(f"❌ JSON decode error: {e}")
             # Jeśli plik jest uszkodzony, utwórz backup i zacznij od nowa
@@ -233,6 +258,24 @@ class CryptoSwapMatrixApp:
             
             # Zapisz portfolio
             for slot in st.session_state.portfolio:
+                # Konwersja timestamp_history z uwzględnieniem różnych typów
+                timestamp_history = []
+                for t in slot.get('timestamp_history', []):
+                    if isinstance(t, datetime):
+                        timestamp_history.append(t.isoformat())
+                    elif isinstance(t, str):
+                        # Jeśli już jest string, sprawdź czy w poprawnym formacie
+                        try:
+                            # Spróbuj sparsować i przekonwertować z powrotem dla spójności
+                            datetime.fromisoformat(t)
+                            timestamp_history.append(t)
+                        except:
+                            # Jeśli nie da się sparsować, użyj aktualnego czasu
+                            timestamp_history.append(datetime.now().isoformat())
+                    else:
+                        # Dla innych typów, użyj aktualnego czasu
+                        timestamp_history.append(datetime.now().isoformat())
+                
                 portfolio_slot = {
                     'token': slot['token'],
                     'quantity': float(slot['quantity']),
@@ -241,14 +284,21 @@ class CryptoSwapMatrixApp:
                     'usdt_value': float(slot.get('usdt_value', 0)),
                     'baseline_quantity': float(slot.get('baseline_quantity', 0)),
                     'quantity_history': [float(q) for q in slot.get('quantity_history', [])],
-                    'timestamp_history': [t.isoformat() for t in slot.get('timestamp_history', [])]
+                    'timestamp_history': timestamp_history  # Używamy poprawionej listy
                 }
                 data['portfolio'].append(portfolio_slot)
             
             # Zapisz trades
             for t in st.session_state.trades:
+                # Upewnij się, że timestamp jest stringiem
+                timestamp = t['timestamp']
+                if isinstance(timestamp, datetime):
+                    timestamp_str = timestamp.isoformat()
+                else:
+                    timestamp_str = str(timestamp)
+                    
                 trade = {
-                    'timestamp': t['timestamp'].isoformat(),
+                    'timestamp': timestamp_str,
                     'from_token': t['from_token'],
                     'to_token': t['to_token'],
                     'from_quantity': float(t['from_quantity']),
