@@ -446,60 +446,6 @@ class CryptoSwapMatrixApp:
                 if st.button("🗑️ Clear all data", use_container_width=True):
                     self.clear_all_data()
 
-    def render_matrix_overview(self):
-        st.header("📊 Matrix Overview")
-        if not st.session_state.portfolio:
-            st.info("👈 Initialize matrix from sidebar")
-            return
-        
-        # Jeden slot pod drugim zamiast w linii
-        for idx, slot in enumerate(st.session_state.portfolio):
-            with st.container():
-                st.subheader(f"Slot {idx+1} - {slot['token']}")
-                
-                if slot['token'] in st.session_state.prices:
-                    current_usdt = slot['quantity'] * st.session_state.prices[slot['token']].bid_price
-                    baseline_quantity = slot.get('baseline_quantity', slot['quantity'])
-                    current_quantity = slot['quantity']
-                    
-                    # Oblicz zmianę ilości od baseline
-                    quantity_change = ((current_quantity - baseline_quantity) / baseline_quantity * 100) if baseline_quantity > 0 else 0
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        delta_color = "normal" if quantity_change >= 0 else "inverse"
-                        delta_value = f"{quantity_change:+.2f}%"
-                        st.metric(
-                            label="Current Value",
-                            value=f"{current_usdt:.2f} USDT",
-                            delta=delta_value,
-                            delta_color=delta_color
-                        )
-                    
-                    with col2:
-                        st.metric(
-                            label="Current Quantity",
-                            value=f"{current_quantity:.6f} {slot['token']}"
-                        )
-                    
-                    with col3:
-                        st.metric(
-                            label="Baseline Quantity",
-                            value=f"{baseline_quantity:.6f} {slot['token']}"
-                        )
-                    
-                    with col4:
-                        st.metric(
-                            label="Quantity Change",
-                            value=f"{quantity_change:+.2f}%"
-                        )
-                        
-                else:
-                    st.error(f"❌ No price data for {slot['token']}")
-                
-                st.markdown("---")
-
     def render_swap_matrix(self):
         st.header("🎯 Swap Matrix")
         for idx, slot in enumerate(st.session_state.portfolio):
@@ -594,8 +540,9 @@ class CryptoSwapMatrixApp:
                 data.append({
                     'Data': t['timestamp'].strftime('%H:%M:%S'),
                     'Z': t['from_token'],
+                    'Ilość Z': f"{t['from_quantity']:.6f}",  # ✅ DODANO: ilość tokena wymienianego
                     'Na': t['to_token'],
-                    'Ilość': f"{t['to_quantity']:.6f}",
+                    'Ilość Na': f"{t['to_quantity']:.6f}",
                     'Powód': t['reason']
                 })
             st.dataframe(pd.DataFrame(data), use_container_width=True)
@@ -624,7 +571,7 @@ class CryptoSwapMatrixApp:
             self.keep_app_alive()
             self.render_sidebar()
             if st.session_state.prices:
-                self.render_matrix_overview()
+                # ✅ USUNIĘTO: render_matrix_overview()
                 if st.session_state.portfolio:
                     self.render_swap_matrix()
                     if st.session_state.tracking:
