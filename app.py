@@ -113,9 +113,16 @@ class AutoSwapMatrix:
         status = "🟢 AKTYWNE" if st.session_state.tracking else "🔴 WYŁĄCZONE"
         st.sidebar.metric("Status śledzenia", status)
         
+        # Bezpieczne pobieranie last_update
         if st.session_state.prices:
-            last_update = list(st.session_state.prices.values())[0]['last_update']
-            st.sidebar.caption(f"🕒 Ostatnie dane: {last_update.strftime('%H:%M:%S')}")
+            price_values = list(st.session_state.prices.values())
+            if price_values and 'last_update' in price_values[0]:
+                last_update = price_values[0]['last_update']
+                st.sidebar.caption(f"🕒 Ostatnie dane: {last_update.strftime('%H:%M:%S')}")
+            else:
+                st.sidebar.caption("🕒 Oczekiwanie na dane...")
+        else:
+            st.sidebar.caption("🕒 Brak danych cenowych")
         
         # Przyciski kontrolne
         col1, col2 = st.sidebar.columns(2)
@@ -210,10 +217,14 @@ class AutoSwapMatrix:
             else:
                 current_price = st.session_state.prices.get(asset['token'], {}).get('bid', 0)
                 current_value = asset['amount'] * current_price
+                purchase_value = asset['amount'] * asset['purchase_price']
+                profit_loss = current_value - purchase_value
+                profit_pct = (profit_loss / purchase_value * 100) if purchase_value > 0 else 0
+                
                 st.metric(
                     "Stan", 
                     f"{asset['amount']:.6f} {asset['token']}",
-                    f"${current_value:,.2f}"
+                    delta=f"{profit_pct:+.2f}%"
                 )
 
     def render_matrix(self):
