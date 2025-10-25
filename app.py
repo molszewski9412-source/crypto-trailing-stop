@@ -7,15 +7,15 @@ from typing import Dict, List
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
-    page_title="Crypto Swap Matrix - Auto",
+    page_title="Crypto Swap Matrix - Single Slot",
     page_icon="🔄",
     layout="wide"
 )
 
-class AutoSwapMatrix:
+class SingleSlotSwapMatrix:
     def __init__(self):
         self.fee_rate = 0.00025
-        self.target_profit = 0.02
+        self.target_profit = 0.02  # 2% target profit
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
@@ -113,16 +113,12 @@ class AutoSwapMatrix:
         status = "🟢 AKTYWNE" if st.session_state.tracking else "🔴 WYŁĄCZONE"
         st.sidebar.metric("Status śledzenia", status)
         
-        # Bezpieczne pobieranie last_update
+        # Ostatnie dane
         if st.session_state.prices:
             price_values = list(st.session_state.prices.values())
             if price_values and 'last_update' in price_values[0]:
                 last_update = price_values[0]['last_update']
                 st.sidebar.caption(f"🕒 Ostatnie dane: {last_update.strftime('%H:%M:%S')}")
-            else:
-                st.sidebar.caption("🕒 Oczekiwanie na dane...")
-        else:
-            st.sidebar.caption("🕒 Brak danych cenowych")
         
         # Przyciski kontrolne
         col1, col2 = st.sidebar.columns(2)
@@ -144,8 +140,8 @@ class AutoSwapMatrix:
             st.sidebar.info(f"📊 Baseline z: {st.session_state.baseline_time.strftime('%H:%M:%S')}")
 
     def render_asset_input(self):
-        """Input dla assetu"""
-        st.header("💰 Stan Portfolio")
+        """Input dla assetu - JEDEN SLOT"""
+        st.header("💰 Stan Portfolio - Jeden Slot")
         
         col1, col2, col3 = st.columns([1, 1, 1])
         
@@ -214,6 +210,21 @@ class AutoSwapMatrix:
             asset = st.session_state.current_asset
             if asset['type'] == 'USDT':
                 st.metric("Stan", f"{asset['amount']:,.2f} USDT")
+                if st.session_state.tracking and 'baseline_equivalents' in st.session_state:
+                    # Pokaz najlepszą zmianę od baseline
+                    best_token = None
+                    best_change = -100
+                    for token in self.tokens_to_track:
+                        if token in st.session_state.prices:
+                            current_eq = self.calculate_equivalent('USDT', token, asset['amount'])
+                            baseline_eq = st.session_state.baseline_equivalents.get(token, current_eq)
+                            change_pct = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+                            if change_pct > best_change:
+                                best_change = change_pct
+                                best_token = token
+                    
+                    if best_token and best_change > 0:
+                        st.metric("Najlepsza zmiana", f"{best_change:+.2f}%", delta=f"{best_token}")
             else:
                 current_price = st.session_state.prices.get(asset['token'], {}).get('bid', 0)
                 current_value = asset['amount'] * current_price
@@ -226,10 +237,25 @@ class AutoSwapMatrix:
                     f"{asset['amount']:.6f} {asset['token']}",
                     delta=f"{profit_pct:+.2f}%"
                 )
+                
+                # Sprawdź czy osiągnięto cel 2% zysku
+                if profit_pct >= self.target_profit * 100:
+                    st.success(f"🎯 Cel osiągnięty! Zysk: {profit_pct:.2f}%")
+                    if st.button("💰 Zakończ rundę (sprzedaj do USDT)"):
+                        equivalent = self.calculate_equivalent(asset['token'], 'USDT', asset['amount'])
+                        st.session_state.current_asset = {
+                            'type': 'USDT',
+                            'amount': equivalent,
+                            'token': None,
+                            'purchase_price': None
+                        }
+                        if st.session_state.tracking:
+                            self.initialize_baseline()
+                        st.rerun()
 
     def render_matrix(self):
-        """Renderuje matrycę ekwiwalentów"""
-        if 'baseline_equivalents' not in st.session_state:
+        """Renderuje matrycę ekwiwalentów - JEDEN SLOT"""
+        if 'baseline_equivalents' not in st.session_state or not st.session_state.tracking:
             st.info("💡 Kliknij 'Start' aby rozpocząć śledzenie")
             return
         
@@ -243,7 +269,8 @@ class AutoSwapMatrix:
         matrix_data = []
         
         if asset['type'] == 'USDT':
-            st.header("📊 Matryca ekwiwalentów - USDT")
+            st.header("📊 Matryca zakupów - Śledzenie % zmiany od baseline")
+            st.info("🎯 Cel: Kupić więcej tokenów niż przy inicjacji")
             
             for token in self.tokens_to_track:
                 if token in prices:
@@ -263,7 +290,7 @@ class AutoSwapMatrix:
                         'Baseline': baseline_equivalent,
                         'Zmiana %': change_pct,
                         'Wartość USDT': usdt_value,
-                        'Cena': prices[token]['ask']
+                        'Cena zakupu': prices[token]['ask']
                     })
             
             df = pd.DataFrame(matrix_data)
@@ -277,15 +304,16 @@ class AutoSwapMatrix:
                     'Baseline': st.column_config.NumberColumn(format="%.6f"),
                     'Zmiana %': st.column_config.NumberColumn(
                         format="%+.2f%%",
-                        help="Zmiana względem baseline"
+                        help="Zmiana względem baseline - im wyższa tym lepiej"
                     ),
                     'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
-                    'Cena': st.column_config.NumberColumn(format="%.4f")
+                    'Cena zakupu': st.column_config.NumberColumn(format="%.4f")
                 }
             )
             
-        else:  # Token
-            st.header(f"📊 Matryca ekwiwalentów - {asset['token']}")
+        else:  # Token - Correlation Matrix
+            st.header(f"📈 Correlation Matrix - {asset['token']}")
+            st.info("🎯 Cel: Akumulować więcej tokenów poprzez wymianę")
             
             current_token = asset['token']
             current_amount = asset['amount']
@@ -307,8 +335,11 @@ class AutoSwapMatrix:
                 # Cena sprzedaży dla 2% zysku
                 if asset['purchase_price']:
                     sell_target_price = self.calculate_sell_price_for_profit(asset['purchase_price'])
+                    current_price = prices[current_token]['bid']
+                    profit_pct = ((current_price - asset['purchase_price']) / asset['purchase_price'] * 100)
                 else:
                     sell_target_price = 0
+                    profit_pct = 0
                 
                 matrix_data.append({
                     'Token': token,
@@ -316,7 +347,8 @@ class AutoSwapMatrix:
                     'Baseline': baseline_equivalent,
                     'Zmiana %': change_pct,
                     'Wartość USDT': usdt_value,
-                    'Sell Price +2%': sell_target_price
+                    'Sell Price +2%': sell_target_price,
+                    'Aktualny zysk USDT': profit_pct
                 })
             
             df = pd.DataFrame(matrix_data)
@@ -330,27 +362,34 @@ class AutoSwapMatrix:
                     'Baseline': st.column_config.NumberColumn(format="%.6f"),
                     'Zmiana %': st.column_config.NumberColumn(
                         format="%+.2f%%",
-                        help="Zmiana względem baseline"
+                        help="Zmiana względem baseline - im wyższa tym lepsza wymiana"
                     ),
                     'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
                     'Sell Price +2%': st.column_config.NumberColumn(
                         format="%.4f",
                         help="Cena sprzedaży dla 2% zysku w USDT"
+                    ),
+                    'Aktualny zysk USDT': st.column_config.NumberColumn(
+                        format="%+.2f%%",
+                        help="Aktualny zysk/strata w USDT względem ceny zakupu"
                     )
                 }
             )
 
     def render_swap_interface(self):
-        """Interface do manualnych swapów"""
-        if st.session_state.current_asset['type'] == 'USDT':
-            st.header("🔄 Manualny zakup tokena")
+        """Interface do manualnych swapów - JEDEN SLOT"""
+        if not st.session_state.tracking:
+            return
             
-            col1, col2, col3 = st.columns([2, 1, 1])
+        st.header("🔄 Manualne operacje")
+        
+        if st.session_state.current_asset['type'] == 'USDT':
+            col1, col2 = st.columns([2, 1])
             with col1:
                 target_token = st.selectbox("Wybierz token do zakupu:", self.tokens_to_track)
             
             with col2:
-                if st.button("Kup token", use_container_width=True):
+                if st.button("💰 Kup token", use_container_width=True, type="primary"):
                     asset = st.session_state.current_asset
                     prices = st.session_state.prices
                     
@@ -363,36 +402,29 @@ class AutoSwapMatrix:
                             'purchase_price': prices[target_token]['ask']
                         }
                         
-                        if st.session_state.tracking:
-                            self.initialize_baseline()
+                        # Reset baseline po zakupie
+                        self.initialize_baseline()
                         
                         st.success(f"✅ Zakupiono {equivalent:.6f} {target_token}")
                         st.rerun()
-            
-            with col3:
-                if st.button("Reset do USDT", use_container_width=True):
-                    st.session_state.current_asset = {
-                        'type': 'USDT',
-                        'amount': 1000.0,
-                        'token': None,
-                        'purchase_price': None
-                    }
-                    if st.session_state.tracking:
-                        self.initialize_baseline()
-                    st.rerun()
         
         else:  # Swap między tokenami
-            st.header("🔄 Manualna wymiana tokenów")
-            
             current_token = st.session_state.current_asset['token']
             available_tokens = [t for t in self.tokens_to_track if t != current_token]
             
             col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
                 target_token = st.selectbox("Wybierz token docelowy:", available_tokens)
+                
+                # Pokaż info o wybranym tokenie
+                if target_token in st.session_state.prices:
+                    current_eq = self.calculate_equivalent(current_token, target_token, st.session_state.current_asset['amount'])
+                    baseline_eq = st.session_state.baseline_equivalents.get(target_token, current_eq)
+                    change_pct = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
+                    st.info(f"Zmiana od baseline: {change_pct:+.2f}%")
             
             with col2:
-                if st.button("Wymień token", use_container_width=True):
+                if st.button("🔄 Wymień token", use_container_width=True, type="primary"):
                     asset = st.session_state.current_asset
                     equivalent = self.calculate_equivalent(asset['token'], target_token, asset['amount'])
                     
@@ -403,14 +435,14 @@ class AutoSwapMatrix:
                         'purchase_price': st.session_state.prices[target_token]['ask']
                     }
                     
-                    if st.session_state.tracking:
-                        self.initialize_baseline()
+                    # Reset baseline po wymianie
+                    self.initialize_baseline()
                     
                     st.success(f"✅ Wymieniono {asset['token']} → {target_token}")
                     st.rerun()
             
             with col3:
-                if st.button("Sprzedaj do USDT", use_container_width=True):
+                if st.button("💵 Sprzedaj do USDT", use_container_width=True):
                     asset = st.session_state.current_asset
                     equivalent = self.calculate_equivalent(asset['token'], 'USDT', asset['amount'])
                     
@@ -421,14 +453,14 @@ class AutoSwapMatrix:
                         'purchase_price': None
                     }
                     
-                    if st.session_state.tracking:
-                        self.initialize_baseline()
+                    # Reset baseline po sprzedaży
+                    self.initialize_baseline()
                     
                     st.success(f"✅ Sprzedano {asset['token']} za {equivalent:,.2f} USDT")
                     st.rerun()
 
     def auto_refresh(self):
-        """Automatyczne odświeżanie danych"""
+        """Automatyczne odświeżanie danych co sekundę"""
         if st.session_state.tracking:
             current_time = datetime.now()
             if 'last_refresh' not in st.session_state:
@@ -441,7 +473,7 @@ class AutoSwapMatrix:
                 st.rerun()
 
     def init_session_state(self):
-        """Inicjalizacja session state"""
+        """Inicjalizacja session state - JEDEN SLOT"""
         if 'prices' not in st.session_state:
             st.session_state.prices = self.get_prices()
         
@@ -461,7 +493,7 @@ class AutoSwapMatrix:
 
     def run(self):
         """Główna pętla aplikacji"""
-        st.title("🔄 Auto Crypto Swap Matrix")
+        st.title("🔄 Single Slot Crypto Matrix")
         st.markdown("---")
         
         # Inicjalizacja
@@ -485,5 +517,5 @@ class AutoSwapMatrix:
 
 # Uruchomienie aplikacji
 if __name__ == "__main__":
-    app = AutoSwapMatrix()
+    app = SingleSlotSwapMatrix()
     app.run()
