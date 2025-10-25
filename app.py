@@ -58,24 +58,43 @@ class SingleSlotSwapMatrix:
             return quantity * (1 - self.fee_rate)
         
         prices = st.session_state.prices
-        if from_token not in prices or to_token not in prices:
+        if not prices:
             return 0.0
-        
-        try:
-            # Dla USDT -> Token
-            if from_token == 'USDT':
-                equivalent = (quantity / prices[to_token]['ask']) * (1 - self.fee_rate)
-            # Dla Token -> USDT
-            elif to_token == 'USDT':
-                equivalent = quantity * prices[from_token]['bid'] * (1 - self.fee_rate)
-            # Dla Token -> Token
-            else:
-                usdt_value = quantity * prices[from_token]['bid'] * (1 - self.fee_rate)
-                equivalent = (usdt_value / prices[to_token]['ask']) * (1 - self.fee_rate)
             
+        # Dla USDT -> Token
+        if from_token == 'USDT':
+            if to_token not in prices:
+                return 0.0
+            ask_price = prices[to_token]['ask']
+            if ask_price <= 0:
+                return 0.0
+            equivalent = (quantity / ask_price) * (1 - self.fee_rate)
             return equivalent
-        except:
-            return 0.0
+        
+        # Dla Token -> USDT
+        elif to_token == 'USDT':
+            if from_token not in prices:
+                return 0.0
+            bid_price = prices[from_token]['bid']
+            if bid_price <= 0:
+                return 0.0
+            equivalent = quantity * bid_price * (1 - self.fee_rate)
+            return equivalent
+        
+        # Dla Token -> Token
+        else:
+            if from_token not in prices or to_token not in prices:
+                return 0.0
+                
+            bid_price = prices[from_token]['bid']
+            ask_price = prices[to_token]['ask']
+            
+            if bid_price <= 0 or ask_price <= 0:
+                return 0.0
+                
+            usdt_value = quantity * bid_price * (1 - self.fee_rate)
+            equivalent = (usdt_value / ask_price) * (1 - self.fee_rate)
+            return equivalent
 
     def calculate_sell_price_for_profit(self, purchase_price: float) -> float:
         """Oblicza cenę sprzedaży dla zysku 2% po opłatach"""
@@ -124,9 +143,12 @@ class SingleSlotSwapMatrix:
         col1, col2 = st.sidebar.columns(2)
         with col1:
             if st.button("▶ Start", use_container_width=True) and not st.session_state.tracking:
-                st.session_state.tracking = True
-                self.initialize_baseline()
-                st.rerun()
+                if st.session_state.prices:
+                    st.session_state.tracking = True
+                    self.initialize_baseline()
+                    st.rerun()
+                else:
+                    st.error("❌ Brak danych cenowych")
         
         with col2:
             if st.button("⏹ Stop", use_container_width=True) and st.session_state.tracking:
@@ -204,27 +226,12 @@ class SingleSlotSwapMatrix:
                 st.session_state.current_asset = new_asset
                 if st.session_state.tracking:
                     self.initialize_baseline()
-                st.info("🔄 Asset zaktualizowany!")
+                st.rerun()
             
             # Wyświetl aktualny stan
             asset = st.session_state.current_asset
             if asset['type'] == 'USDT':
                 st.metric("Stan", f"{asset['amount']:,.2f} USDT")
-                if st.session_state.tracking and 'baseline_equivalents' in st.session_state:
-                    # Pokaz najlepszą zmianę od baseline
-                    best_token = None
-                    best_change = -100
-                    for token in self.tokens_to_track:
-                        if token in st.session_state.prices:
-                            current_eq = self.calculate_equivalent('USDT', token, asset['amount'])
-                            baseline_eq = st.session_state.baseline_equivalents.get(token, current_eq)
-                            change_pct = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                            if change_pct > best_change:
-                                best_change = change_pct
-                                best_token = token
-                    
-                    if best_token and best_change > 0:
-                        st.metric("Najlepsza zmiana", f"{best_change:+.2f}%", delta=f"{best_token}")
             else:
                 current_price = st.session_state.prices.get(asset['token'], {}).get('bid', 0)
                 current_value = asset['amount'] * current_price
@@ -237,21 +244,6 @@ class SingleSlotSwapMatrix:
                     f"{asset['amount']:.6f} {asset['token']}",
                     delta=f"{profit_pct:+.2f}%"
                 )
-                
-                # Sprawdź czy osiągnięto cel 2% zysku
-                if profit_pct >= self.target_profit * 100:
-                    st.success(f"🎯 Cel osiągnięty! Zysk: {profit_pct:.2f}%")
-                    if st.button("💰 Zakończ rundę (sprzedaj do USDT)"):
-                        equivalent = self.calculate_equivalent(asset['token'], 'USDT', asset['amount'])
-                        st.session_state.current_asset = {
-                            'type': 'USDT',
-                            'amount': equivalent,
-                            'token': None,
-                            'purchase_price': None
-                        }
-                        if st.session_state.tracking:
-                            self.initialize_baseline()
-                        st.rerun()
 
     def render_matrix(self):
         """Renderuje matrycę ekwiwalentów - JEDEN SLOT"""
@@ -279,7 +271,10 @@ class SingleSlotSwapMatrix:
                     baseline_equivalent = st.session_state.baseline_equivalents.get(token, current_equivalent)
                     
                     # Zmiana % od baseline
-                    change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100) if baseline_equivalent > 0 else 0
+                    if baseline_equivalent > 0:
+                        change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+                    else:
+                        change_pct = 0
                     
                     # Wartość w USDT
                     usdt_value = current_equivalent * prices[token]['bid'] * (1 - self.fee_rate)
@@ -293,23 +288,26 @@ class SingleSlotSwapMatrix:
                         'Cena zakupu': prices[token]['ask']
                     })
             
-            df = pd.DataFrame(matrix_data)
-            df = df.sort_values('Zmiana %', ascending=False)
-            
-            st.dataframe(
-                df,
-                use_container_width=True,
-                column_config={
-                    'Ekwiwalent': st.column_config.NumberColumn(format="%.6f"),
-                    'Baseline': st.column_config.NumberColumn(format="%.6f"),
-                    'Zmiana %': st.column_config.NumberColumn(
-                        format="%+.2f%%",
-                        help="Zmiana względem baseline - im wyższa tym lepiej"
-                    ),
-                    'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
-                    'Cena zakupu': st.column_config.NumberColumn(format="%.4f")
-                }
-            )
+            if matrix_data:
+                df = pd.DataFrame(matrix_data)
+                df = df.sort_values('Zmiana %', ascending=False)
+                
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    column_config={
+                        'Ekwiwalent': st.column_config.NumberColumn(format="%.6f"),
+                        'Baseline': st.column_config.NumberColumn(format="%.6f"),
+                        'Zmiana %': st.column_config.NumberColumn(
+                            format="%+.2f%%",
+                            help="Zmiana względem baseline - im wyższa tym lepiej"
+                        ),
+                        'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
+                        'Cena zakupu': st.column_config.NumberColumn(format="%.4f")
+                    }
+                )
+            else:
+                st.error("❌ Brak danych do wyświetlenia")
             
         else:  # Token - Correlation Matrix
             st.header(f"📈 Correlation Matrix - {asset['token']}")
@@ -327,7 +325,10 @@ class SingleSlotSwapMatrix:
                 baseline_equivalent = st.session_state.baseline_equivalents.get(token, current_equivalent)
                 
                 # Zmiana % od baseline
-                change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100) if baseline_equivalent > 0 else 0
+                if baseline_equivalent > 0:
+                    change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+                else:
+                    change_pct = 0
                 
                 # Wartość w USDT
                 usdt_value = self.calculate_equivalent(current_token, 'USDT', current_amount)
@@ -351,30 +352,33 @@ class SingleSlotSwapMatrix:
                     'Aktualny zysk USDT': profit_pct
                 })
             
-            df = pd.DataFrame(matrix_data)
-            df = df.sort_values('Zmiana %', ascending=False)
-            
-            st.dataframe(
-                df,
-                use_container_width=True,
-                column_config={
-                    'Ekwiwalent': st.column_config.NumberColumn(format="%.6f"),
-                    'Baseline': st.column_config.NumberColumn(format="%.6f"),
-                    'Zmiana %': st.column_config.NumberColumn(
-                        format="%+.2f%%",
-                        help="Zmiana względem baseline - im wyższa tym lepsza wymiana"
-                    ),
-                    'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
-                    'Sell Price +2%': st.column_config.NumberColumn(
-                        format="%.4f",
-                        help="Cena sprzedaży dla 2% zysku w USDT"
-                    ),
-                    'Aktualny zysk USDT': st.column_config.NumberColumn(
-                        format="%+.2f%%",
-                        help="Aktualny zysk/strata w USDT względem ceny zakupu"
-                    )
-                }
-            )
+            if matrix_data:
+                df = pd.DataFrame(matrix_data)
+                df = df.sort_values('Zmiana %', ascending=False)
+                
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    column_config={
+                        'Ekwiwalent': st.column_config.NumberColumn(format="%.6f"),
+                        'Baseline': st.column_config.NumberColumn(format="%.6f"),
+                        'Zmiana %': st.column_config.NumberColumn(
+                            format="%+.2f%%",
+                            help="Zmiana względem baseline - im wyższa tym lepsza wymiana"
+                        ),
+                        'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
+                        'Sell Price +2%': st.column_config.NumberColumn(
+                            format="%.4f",
+                            help="Cena sprzedaży dla 2% zysku w USDT"
+                        ),
+                        'Aktualny zysk USDT': st.column_config.NumberColumn(
+                            format="%+.2f%%",
+                            help="Aktualny zysk/strata w USDT względem ceny zakupu"
+                        )
+                    }
+                )
+            else:
+                st.error("❌ Brak danych do wyświetlenia")
 
     def render_swap_interface(self):
         """Interface do manualnych swapów - JEDEN SLOT"""
@@ -415,13 +419,6 @@ class SingleSlotSwapMatrix:
             col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
                 target_token = st.selectbox("Wybierz token docelowy:", available_tokens)
-                
-                # Pokaż info o wybranym tokenie
-                if target_token in st.session_state.prices:
-                    current_eq = self.calculate_equivalent(current_token, target_token, st.session_state.current_asset['amount'])
-                    baseline_eq = st.session_state.baseline_equivalents.get(target_token, current_eq)
-                    change_pct = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                    st.info(f"Zmiana od baseline: {change_pct:+.2f}%")
             
             with col2:
                 if st.button("🔄 Wymień token", use_container_width=True, type="primary"):
@@ -468,9 +465,11 @@ class SingleSlotSwapMatrix:
             
             # Odśwież co sekundę
             if (current_time - st.session_state.last_refresh).total_seconds() >= 1:
-                st.session_state.prices = self.get_prices()
-                st.session_state.last_refresh = current_time
-                st.rerun()
+                new_prices = self.get_prices()
+                if new_prices:  # Tylko jeśli udało się pobrać ceny
+                    st.session_state.prices = new_prices
+                    st.session_state.last_refresh = current_time
+                    st.rerun()
 
     def init_session_state(self):
         """Inicjalizacja session state - JEDEN SLOT"""
