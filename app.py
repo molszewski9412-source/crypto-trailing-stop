@@ -646,3 +646,5 @@ class CryptoSwapMatrixApp:
 if __name__=="__main__":
     app = CryptoSwapMatrixApp()
     app.run()
+
+# to ostatnia działająca wersja
