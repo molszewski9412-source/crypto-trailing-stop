@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 import requests
-import time
 from datetime import datetime
 from typing import Dict
+from streamlit_autorefresh import st_autorefresh
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
@@ -11,6 +11,9 @@ st.set_page_config(
     page_icon="🔄",
     layout="wide"
 )
+
+# ================== Auto refresh co 3 sekundy ==================
+st_autorefresh(interval=3000, key="auto_refresh")
 
 class CryptoSwapMatrix:
     def __init__(self):
@@ -168,7 +171,7 @@ class CryptoSwapMatrix:
                                 'MX': {'total': 100, 'free': 100, 'locked': 0}
                             }
                             st.success("✅ Connected to MEXC")
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.error("❌ API connection failed")
                     except:
@@ -233,7 +236,7 @@ class CryptoSwapMatrix:
             st.sidebar.metric("Status", "🟢 LIVE" if st.session_state.tracking else "🔴 STOPPED")
             if st.sidebar.button("🔄 Refresh Now"):
                 st.session_state.prices = self.get_prices()
-                st.experimental_rerun()
+                st.rerun()
 
     # ================== Run ==================
     def run(self):
@@ -260,10 +263,6 @@ class CryptoSwapMatrix:
                 st.info("🔄 Swap detected")
             elif action == "end_round":
                 st.success("🏁 Round ended! Target reached")
-        # Auto refresh co 3 sekundy
-        if st.session_state.tracking:
-            time.sleep(3)
-            st.experimental_rerun()
 
 # ================== Uruchomienie ==================
 if __name__ == "__main__":
