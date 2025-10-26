@@ -3,7 +3,10 @@ import pandas as pd
 import requests
 from datetime import datetime
 from typing import Dict
-from streamlit_autorefresh import st_autorefresh
+import hmac
+import hashlib
+import urllib.parse
+import time
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
@@ -11,9 +14,6 @@ st.set_page_config(
     page_icon="🔄",
     layout="wide"
 )
-
-# ================== Auto refresh co 3 sekundy ==================
-st_autorefresh(interval=3000, key="auto_refresh")
 
 class CryptoSwapMatrix:
     def __init__(self):
@@ -94,38 +94,69 @@ class CryptoSwapMatrix:
             st.session_state.last_main_token = None
         if 'tracking' not in st.session_state:
             st.session_state.tracking = False
+        if 'api_key' not in st.session_state:
+            st.session_state.api_key = ""
+        if 'secret_key' not in st.session_state:
+            st.session_state.secret_key = ""
+
+    # ================== Pobranie rzeczywistego portfolio z MEXC ==================
+    def get_real_portfolio(self, api_key, secret_key):
+        base_url = "https://api.mexc.com"
+        endpoint = "/api/v3/account"
+        timestamp = int(time.time() * 1000)
+        params = {"recvWindow": 5000, "timestamp": timestamp}
+        query_string = urllib.parse.urlencode(params)
+        signature = hmac.new(secret_key.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+        url = f"{base_url}{endpoint}?{query_string}&signature={signature}"
+        headers = {"X-MEXC-APIKEY": api_key}
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                portfolio = {}
+                for item in data['balances']:
+                    total = float(item['free']) + float(item['locked'])
+                    if total > 0:
+                        portfolio[item['asset']] = {'total': total, 'free': float(item['free']), 'locked': float(item['locked'])}
+                return portfolio
+            else:
+                st.error("❌ Failed to fetch portfolio from MEXC")
+                return {}
+        except:
+            st.error("❌ Connection error")
+            return {}
 
     # ================== Detekcja akcji ==================
-    def detect_action(self, new_portfolio):
-        old_main = st.session_state.last_main_token
-        new_main = self.find_main_token(new_portfolio)
-        st.session_state.last_main_token = new_main
+    def detect_action(self):
+        portfolio = st.session_state.portfolio
         prices = st.session_state.prices
+        old_main = st.session_state.last_main_token
+        new_main = self.find_main_token(portfolio)
+        st.session_state.last_main_token = new_main
 
-        usdt_value = new_portfolio.get('USDT', {}).get('total', 0)
-        total_value = sum(balance['total']*prices[a]['bid'] for a, balance in new_portfolio.items() if a in prices)
-
+        usdt_value = portfolio.get('USDT', {}).get('total', 0)
+        total_value = sum(balance['total']*prices[a]['bid'] for a, balance in portfolio.items() if a in prices)
         baseline_usdt = st.session_state.baseline_data.get('usdt_value', total_value)
 
-        # start rundy
+        # Start rundy: z USDT na token
         if not st.session_state.round_active and old_main == "USDT" and new_main != "USDT":
             st.session_state.round_active = True
             self.set_baseline(new_main)
             return "start_round"
 
-        # swap między tokenami
+        # Swap między tokenami
         if st.session_state.round_active and new_main != "USDT" and old_main != new_main:
             self.update_top_after_swap(new_main)
             return "swap"
 
-        # zakończenie rundy: wartość USDT >= 102% baseline
+        # Zakończenie rundy: USDT >= 102% baseline
         if st.session_state.round_active and new_main == "USDT" and usdt_value >= 1.02 * baseline_usdt:
             st.session_state.round_active = False
             return "end_round"
 
         return "hold"
 
-    # ================== Ustawianie baseline ==================
+    # ================== Baseline ==================
     def set_baseline(self, main_token):
         portfolio = st.session_state.portfolio
         amount = portfolio[main_token]['total']
@@ -141,7 +172,7 @@ class CryptoSwapMatrix:
             'timestamp': datetime.now()
         }
 
-    # ================== Aktualizacja top equivalents ==================
+    # ================== Top equivalents ==================
     def update_top_after_swap(self, new_token):
         amount = st.session_state.portfolio[new_token]['total']
         current_equivalents = {}
@@ -157,22 +188,18 @@ class CryptoSwapMatrix:
     def setup_api_credentials(self):
         st.sidebar.header("🔐 API Configuration")
         with st.sidebar.form("api_config"):
-            api_key = st.text_input("MEXC API Key", type="password")
-            secret_key = st.text_input("MEXC Secret Key", type="password")
+            api_key = st.text_input("MEXC API Key", value=st.session_state.api_key, type="password")
+            secret_key = st.text_input("MEXC Secret Key", value=st.session_state.secret_key, type="password")
             if st.form_submit_button("🔗 Connect to MEXC"):
                 if api_key and secret_key:
-                    try:
-                        test_response = requests.get("https://api.mexc.com/api/v3/ping", timeout=10)
-                        if test_response.status_code == 200:
-                            st.session_state.tracking = True
-                            # Tutaj zamiast testowego portfolio pobierz prawdziwe z API:
-                            # st.session_state.portfolio = get_real_portfolio(api_key, secret_key)
-                            st.success("✅ Connected to MEXC")
-                            st.rerun()
-                        else:
-                            st.error("❌ API connection failed")
-                    except:
-                        st.error("❌ Connection error")
+                    st.session_state.api_key = api_key
+                    st.session_state.secret_key = secret_key
+                    portfolio = self.get_real_portfolio(api_key, secret_key)
+                    if portfolio:
+                        st.session_state.portfolio = portfolio
+                        st.session_state.tracking = True
+                        st.success("✅ Connected and portfolio loaded")
+                        st.rerun()
 
     # ================== Render portfolio ==================
     def render_portfolio(self):
@@ -197,7 +224,7 @@ class CryptoSwapMatrix:
         st.dataframe(df, use_container_width=True)
         st.metric("Total Value", f"${total_value:,.2f}")
 
-    # ================== Render matrix ==================
+    # ================== Render matryca ==================
     def render_matrix(self):
         if not st.session_state.round_active:
             st.info("💡 Start a round with USDT to see matrix")
@@ -224,14 +251,14 @@ class CryptoSwapMatrix:
                 'Δ Top %': change_top
             })
         df = pd.DataFrame(matrix).sort_values('Δ Top %', ascending=False)
-        st.dataframe(df)
+        st.dataframe(df, use_container_width=True)
 
-    # ================== Render Control Panel ==================
+    # ================== Render kontrolny panel ==================
     def render_control_panel(self):
         st.sidebar.header("🎮 Control Panel")
         if st.session_state.tracking:
-            st.sidebar.metric("Status", "🟢 LIVE" if st.session_state.tracking else "🔴 STOPPED")
-            if st.sidebar.button("🔄 Refresh Now"):
+            st.sidebar.metric("Status", "🟢 LIVE")
+            if st.sidebar.button("🔄 Refresh Prices"):
                 st.session_state.prices = self.get_prices()
                 st.rerun()
 
@@ -252,8 +279,8 @@ class CryptoSwapMatrix:
             if st.session_state.tracking:
                 self.render_control_panel()
         # Detekcja akcji
-        if st.session_state.portfolio:
-            action = self.detect_action(st.session_state.portfolio)
+        if st.session_state.tracking and st.session_state.portfolio:
+            action = self.detect_action()
             if action == "start_round":
                 st.success("🎯 Round started")
             elif action == "swap":
