@@ -447,7 +447,8 @@ class CryptoSwapMatrix:
                             st.session_state.prices = self.get_prices()
                             # set baseline & main detection on connect
                             self.detect_swap_and_handle(api_key, secret_key)
-                            st.experimental_rerun()
+                            st.rerun()
+
                         else:
                             st.error("API ping failed")
                     except Exception as e:
@@ -461,7 +462,8 @@ class CryptoSwapMatrix:
                 st.session_state.portfolio = self.get_real_portfolio(st.session_state.api_key, st.session_state.secret_key)
                 # detect & handle any swaps
                 self.detect_swap_and_handle(st.session_state.api_key, st.session_state.secret_key)
-                st.experimental_rerun()
+                st.rerun()
+
 
     # ---------------- run loop ----------------
     def run(self):
@@ -491,7 +493,8 @@ class CryptoSwapMatrix:
             # detect swap & handle baseline/top
             self.detect_swap_and_handle(st.session_state.api_key, st.session_state.secret_key)
             time.sleep(3)
-            st.experimental_rerun()
+            st.rerun()
+
 
 
 # ============= entry point ==============
