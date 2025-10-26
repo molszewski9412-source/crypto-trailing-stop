@@ -8,13 +8,38 @@ import json
 import urllib.parse
 from datetime import datetime
 from typing import Dict, List, Optional
+from dataclasses import dataclass, asdict
+import uuid
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
-    page_title="Crypto Portfolio Tracker - MEXC",
-    page_icon="📊",
+    page_title="Crypto Trader - MEXC",
+    page_icon="🤖",
     layout="wide"
 )
+
+# ================== Data Classes ==================
+@dataclass
+class Trade:
+    timestamp: datetime
+    from_token: str
+    to_token: str
+    from_amount: float
+    to_amount: float
+    prices_at_trade: Dict[str, Dict]
+    equivalent_at_trade: Dict[str, float]
+
+@dataclass
+class TradingRound:
+    round_id: str
+    start_time: datetime
+    start_prices: Dict[str, Dict]
+    baseline_equivalents: Dict[str, float]
+    top_equivalents: Dict[str, float]
+    current_token: str
+    current_amount: float
+    trade_history: List[Trade]
+    status: str
 
 class MexcPrivateAPI:
     def __init__(self, api_key: str, secret_key: str):
@@ -25,7 +50,6 @@ class MexcPrivateAPI:
     def _sign_request(self, params: dict) -> str:
         """Generuje podpis HMAC SHA256 dla requestów MEXC"""
         try:
-            # MEXC wymaga specjalnego formatowania query string
             query_string = urllib.parse.urlencode(params, doseq=True)
             signature = hmac.new(
                 self.secret_key.encode('utf-8'),
@@ -47,7 +71,6 @@ class MexcPrivateAPI:
                 'recvWindow': 5000
             })
             
-            # Usuń None values
             params = {k: v for k, v in params.items() if v is not None}
             
             signature = self._sign_request(params)
@@ -90,7 +113,7 @@ class MexcPrivateAPI:
                 locked = float(balance['locked'])
                 total = free + locked
                 
-                if total > 0:  # Tylko tokeny z dodatnim balansem
+                if total > 0:
                     balances[asset] = {
                         'free': free,
                         'locked': locked,
@@ -109,9 +132,11 @@ class MexcPrivateAPI:
         data = self._make_private_request('/api/v3/account')
         return data is not None
 
-class CryptoPortfolioTracker:
+class CryptoAutoTrader:
     def __init__(self):
         self.fee_rate = 0.00025
+        self.swap_threshold = 0.5
+        self.target_profit = 0.02
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
@@ -129,18 +154,14 @@ class CryptoPortfolioTracker:
         if 'portfolio' not in st.session_state:
             st.session_state.portfolio = {}
         if 'prices' not in st.session_state:
-            st.session_state.prices = self.get_current_prices()
+            st.session_state.prices = self.get_current_prices_with_timestamp()
+        if 'current_round' not in st.session_state:
+            st.session_state.current_round = None
         if 'tracking' not in st.session_state:
             st.session_state.tracking = False
-        if 'baseline_equivalents' not in st.session_state:
-            st.session_state.baseline_equivalents = {}
-        if 'orders' not in st.session_state:
-            st.session_state.orders = []
-        if 'main_trading_token' not in st.session_state:
-            st.session_state.main_trading_token = None
         
-    def get_current_prices(self) -> Dict[str, Dict]:
-        """Pobiera aktualne ceny bid/ask"""
+    def get_current_prices_with_timestamp(self) -> Dict[str, Dict]:
+        """Pobiera aktualne ceny bid/ask z timestampem"""
         prices = {}
         try:
             response = requests.get("https://api.mexc.com/api/v3/ticker/bookTicker", timeout=10)
@@ -158,7 +179,7 @@ class CryptoPortfolioTracker:
                                 prices[token] = {
                                     'bid': bid_price,
                                     'ask': ask_price,
-                                    'last_update': datetime.now()
+                                    'timestamp': datetime.now()
                                 }
                         except:
                             continue
@@ -166,12 +187,11 @@ class CryptoPortfolioTracker:
             st.error(f"❌ Błąd pobierania cen: {e}")
         return prices
     
-    def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
-        """Oblicza ekwiwalent między tokenami"""
+    def calculate_equivalent_with_prices(self, from_token: str, to_token: str, quantity: float, prices: Dict) -> float:
+        """Oblicza ekwiwalent między tokenami używając konkretnych cen"""
         if from_token == to_token:
             return quantity * (1 - self.fee_rate)
         
-        prices = st.session_state.prices
         if not prices:
             return 0.0
             
@@ -207,13 +227,22 @@ class CryptoPortfolioTracker:
             equivalent = (usdt_value / ask_price) * (1 - self.fee_rate)
             return equivalent
 
-    def find_main_trading_token(self) -> str:
+    def calculate_all_equivalents(self, from_token: str, quantity: float, prices: Dict) -> Dict[str, float]:
+        """Oblicza ekwiwalenty dla wszystkich tokenów"""
+        equivalents = {}
+        for target_token in self.tokens_to_track:
+            if target_token != from_token:
+                equivalent = self.calculate_equivalent_with_prices(from_token, target_token, quantity, prices)
+                equivalents[target_token] = equivalent
+        return equivalents
+
+    def find_main_trading_token(self, portfolio: Dict) -> str:
         """Znajduje token z najwyższą wartością w USDT (oprócz USDT)"""
         max_value = 0
         main_token = None
         prices = st.session_state.prices
         
-        for asset, balance_info in st.session_state.portfolio.items():
+        for asset, balance_info in portfolio.items():
             if asset == 'USDT':
                 continue
                 
@@ -224,6 +253,106 @@ class CryptoPortfolioTracker:
                     main_token = asset
         
         return main_token
+
+    def start_new_round(self, selected_token: str):
+        """Rozpoczyna nową rundę handlową"""
+        current_prices = self.get_current_prices_with_timestamp()
+        
+        if 'USDT' not in st.session_state.portfolio:
+            st.error("❌ No USDT in portfolio to start round")
+            return
+            
+        usdt_amount = st.session_state.portfolio['USDT']['total']
+        
+        # Oblicz baseline equivalents
+        baseline = {}
+        for token in self.tokens_to_track:
+            equivalent = self.calculate_equivalent_with_prices('USDT', token, usdt_amount, current_prices)
+            baseline[token] = equivalent
+        
+        # Stwórz nową rundę
+        new_round = TradingRound(
+            round_id=f"round_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            start_time=datetime.now(),
+            start_prices=current_prices,
+            baseline_equivalents=baseline,
+            top_equivalents=baseline.copy(),
+            current_token=selected_token,
+            current_amount=baseline[selected_token],
+            trade_history=[],
+            status='ACTIVE'
+        )
+        
+        st.session_state.current_round = new_round
+        st.session_state.tracking = True
+        st.success(f"✅ New round started: USDT → {selected_token}")
+
+    def detect_and_process_swap(self):
+        """Wykrywa manualne swapy i przetwarza je"""
+        if not st.session_state.current_round or st.session_state.current_round.status != 'ACTIVE':
+            return False
+            
+        current_round = st.session_state.current_round
+        
+        # Pobierz aktualne portfolio
+        current_portfolio = st.session_state.mexc_api.get_account_balance()
+        if not current_portfolio:
+            return False
+            
+        # Znajdź główny token
+        new_main_token = self.find_main_trading_token(current_portfolio)
+        if not new_main_token or new_main_token == current_round.current_token:
+            return False
+            
+        # SWAP WYKRYTY
+        swap_timestamp = datetime.now()
+        prices_at_swap = self.get_current_prices_with_timestamp()
+        new_amount = current_portfolio[new_main_token]['total']
+        
+        # Oblicz ekwiwalenty w momencie swapu
+        equivalents_at_swap = self.calculate_all_equivalents(new_main_token, new_amount, prices_at_swap)
+        
+        # Stwórz rekord trade
+        trade = Trade(
+            timestamp=swap_timestamp,
+            from_token=current_round.current_token,
+            to_token=new_main_token,
+            from_amount=current_round.current_amount,
+            to_amount=new_amount,
+            prices_at_trade=prices_at_swap,
+            equivalent_at_trade=equivalents_at_swap
+        )
+        
+        # Aktualizuj top equivalents
+        self.update_top_equivalents(trade)
+        
+        # Zaktualizuj rundę
+        current_round.current_token = new_main_token
+        current_round.current_amount = new_amount
+        current_round.trade_history.append(trade)
+        
+        st.success(f"🔄 Swap detected: {trade.from_token} → {trade.to_token}")
+        return True
+
+    def update_top_equivalents(self, trade: Trade):
+        """Aktualizuje top equivalents na podstawie trade"""
+        current_round = st.session_state.current_round
+        
+        # Dla nowego tokena: top = dokładna ilość z trade
+        current_round.top_equivalents[trade.to_token] = trade.to_amount
+        
+        # Dla innych tokenów: użyj ekwiwalentów z momentu trade
+        for token, equivalent in trade.equivalent_at_trade.items():
+            current_top = current_round.top_equivalents.get(token, 0)
+            if equivalent > current_top:
+                current_round.top_equivalents[token] = equivalent
+
+    def end_current_round(self):
+        """Kończy aktualną rundę"""
+        if st.session_state.current_round:
+            st.session_state.current_round.status = 'COMPLETED'
+            st.session_state.tracking = False
+            st.success("✅ Round completed")
 
     def setup_api_credentials(self):
         """Setup bezpiecznego wprowadzania kluczy API"""
@@ -237,14 +366,13 @@ class CryptoPortfolioTracker:
         """)
         
         with st.sidebar.form("api_config"):
-            api_key = st.text_input("MEXC API Key", type="password", help="Your MEXC API Key with READ permissions")
-            secret_key = st.text_input("MEXC Secret Key", type="password", help="Your MEXC Secret Key")
+            api_key = st.text_input("MEXC API Key", type="password")
+            secret_key = st.text_input("MEXC Secret Key", type="password")
             
             if st.form_submit_button("🔗 Connect to MEXC"):
                 if api_key and secret_key:
                     with st.spinner("Testing API connection..."):
                         try:
-                            # Test connection first
                             test_api = MexcPrivateAPI(api_key, secret_key)
                             if test_api.test_connection():
                                 st.session_state.mexc_api = test_api
@@ -252,64 +380,20 @@ class CryptoPortfolioTracker:
                                 
                                 # Load initial data
                                 balance = st.session_state.mexc_api.get_account_balance()
-                                orders = st.session_state.mexc_api.get_current_orders()
-                                
                                 if balance:
                                     st.session_state.portfolio = balance
-                                    st.session_state.orders = orders
-                                    st.session_state.tracking = True
-                                    
-                                    # Znajdź główny token do handlu
-                                    st.session_state.main_trading_token = self.find_main_trading_token()
-                                    self.initialize_baseline_from_portfolio()
                                     st.success("✅ Connected to MEXC API - Read Only")
                                 else:
                                     st.error("❌ Failed to load portfolio data")
                             else:
-                                st.error("❌ API connection failed - check your keys and permissions")
+                                st.error("❌ API connection failed")
                         except Exception as e:
                             st.error(f"❌ Connection error: {str(e)}")
                 else:
                     st.error("❌ Please enter both API keys")
 
-    def initialize_baseline_from_portfolio(self):
-        """Inicjalizuje baseline z aktualnego portfolio"""
-        baseline = {}
-        prices = st.session_state.prices
-        
-        # Tylko dla głównego tokena do handlu
-        main_token = st.session_state.main_trading_token
-        if not main_token:
-            return
-            
-        if main_token in st.session_state.portfolio:
-            total_amount = st.session_state.portfolio[main_token]['total']
-            
-            # Dla głównego tokena: baseline to ekwiwalenty w innych tokenach (w tym MX)
-            for target_token in self.tokens_to_track:
-                if target_token != main_token:  # MX jest teraz uwzględniony!
-                    equivalent = self.calculate_equivalent(main_token, target_token, total_amount)
-                    baseline[f"{main_token}_{target_token}"] = equivalent
-        
-        st.session_state.baseline_equivalents = baseline
-        st.session_state.baseline_time = datetime.now()
-        st.session_state.initial_portfolio_value = self.calculate_portfolio_value()
-
-    def calculate_portfolio_value(self) -> float:
-        """Oblicza całkowitą wartość portfolio w USDT"""
-        total_value = 0
-        prices = st.session_state.prices
-        
-        for asset, balance_info in st.session_state.portfolio.items():
-            if asset == 'USDT':
-                total_value += balance_info['total']
-            elif asset in prices:
-                total_value += balance_info['total'] * prices[asset]['bid']
-        
-        return total_value
-
     def render_portfolio_overview(self):
-        """Pokazuje aktualne portfolio z MEXC - WSZYSTKIE tokeny"""
+        """Pokazuje aktualne portfolio z MEXC"""
         st.header("💰 Live Portfolio from MEXC")
         
         if not st.session_state.portfolio:
@@ -343,236 +427,175 @@ class CryptoPortfolioTracker:
                     'Value USDT': f"{value:,.2f}",
                     'Price': f"{prices[asset]['bid']:.4f}"
                 })
-            else:
-                # Tokeny bez ceny (może nie być w USDT pair)
-                portfolio_data.append({
-                    'Asset': f"{asset} ⚠️",
-                    'Free': f"{balance['free']:.6f}",
-                    'Locked': f"{balance['locked']:.6f}",
-                    'Total': f"{balance['total']:.6f}",
-                    'Value USDT': "N/A",
-                    'Price': "N/A"
-                })
         
         if portfolio_data:
             df = pd.DataFrame(portfolio_data)
             st.dataframe(df, use_container_width=True, hide_index=True)
             
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Total Value", f"${total_value:,.2f}")
             with col2:
-                if 'initial_portfolio_value' in st.session_state:
-                    profit_loss = total_value - st.session_state.initial_portfolio_value
-                    profit_pct = (profit_loss / st.session_state.initial_portfolio_value * 100) if st.session_state.initial_portfolio_value > 0 else 0
-                    st.metric("P&L", f"${profit_loss:+,.2f}", f"{profit_pct:+.2f}%")
-            with col3:
                 st.metric("Assets", len(portfolio_data))
-            with col4:
-                if st.session_state.main_trading_token:
-                    main_token_value = 0
-                    if st.session_state.main_trading_token in prices and st.session_state.main_trading_token in st.session_state.portfolio:
-                        main_token_value = st.session_state.portfolio[st.session_state.main_trading_token]['total'] * prices[st.session_state.main_trading_token]['bid']
-                    st.metric("Main Trading", st.session_state.main_trading_token, f"${main_token_value:,.2f}")
+            with col3:
+                if st.session_state.current_round:
+                    st.metric("Current Round", st.session_state.current_round.current_token)
 
-    def render_orders_overview(self):
-        """Pokazuje aktualne zlecenia"""
-        if not st.session_state.orders:
-            return
+    def render_round_control(self):
+        """Panel kontrolny rundy"""
+        st.sidebar.header("🎮 Round Control")
+        
+        if st.session_state.api_initialized and 'USDT' in st.session_state.portfolio:
+            if not st.session_state.current_round or st.session_state.current_round.status == 'COMPLETED':
+                # Start new round
+                available_tokens = [t for t in self.tokens_to_track if t != 'USDT']
+                selected_token = st.sidebar.selectbox("Select token to start round:", available_tokens)
+                
+                if st.sidebar.button("🚀 Start New Round", use_container_width=True):
+                    self.start_new_round(selected_token)
+                    st.rerun()
             
-        st.header("📋 Active Orders")
-        
-        orders_data = []
-        for order in st.session_state.orders:
-            orders_data.append({
-                'Symbol': order.get('symbol', ''),
-                'Side': order.get('side', ''),
-                'Type': order.get('type', ''),
-                'Quantity': float(order.get('origQty', 0)),
-                'Price': float(order.get('price', 0)),
-                'Status': order.get('status', '')
-            })
-        
-        if orders_data:
-            df = pd.DataFrame(orders_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            elif st.session_state.current_round.status == 'ACTIVE':
+                # Active round controls
+                current_round = st.session_state.current_round
+                
+                st.sidebar.metric("Status", "🟢 ACTIVE")
+                st.sidebar.metric("Current Token", current_round.current_token)
+                st.sidebar.metric("Amount", f"{current_round.current_amount:.6f}")
+                
+                if st.sidebar.button("⏹️ End Round", use_container_width=True):
+                    self.end_current_round()
+                    st.rerun()
 
     def render_swap_matrix(self):
-        """Renderuje matrycę swapów tylko dla głównego tokena do handlu"""
-        if not st.session_state.tracking:
-            st.info("💡 Connect to MEXC API to see swap matrix")
+        """Renderuje matrycę swap opportunities"""
+        if not st.session_state.current_round or st.session_state.current_round.status != 'ACTIVE':
+            st.info("💡 Start a trading round to see swap opportunities")
             return
             
-        if not st.session_state.main_trading_token:
-            st.warning("⚠️ No main trading token found in portfolio")
-            return
-            
+        current_round = st.session_state.current_round
+        current_prices = st.session_state.prices
+        
         st.header("🎯 Swap Opportunity Matrix")
-        st.info(f"**Trading with:** {st.session_state.main_trading_token}")
+        st.info(f"**Trading with:** {current_round.current_token} ({current_round.current_amount:.6f})")
         
-        main_token = st.session_state.main_trading_token
-        if main_token in st.session_state.portfolio:
-            amount = st.session_state.portfolio[main_token]['total']
-            self.render_asset_matrix(main_token, amount)
-    
-    def render_asset_matrix(self, asset: str, amount: float):
-        """Renderuje matrycę dla głównego tokena do handlu (w tym MX)"""
         matrix_data = []
-        prices = st.session_state.prices
-        
         for target_token in self.tokens_to_track:
-            if target_token == asset:  # Tylko pomijamy ten sam token
+            if target_token == current_round.current_token:
                 continue
                 
-            current_equivalent = self.calculate_equivalent(asset, target_token, amount)
-            baseline_key = f"{asset}_{target_token}"
-            baseline_equivalent = st.session_state.baseline_equivalents.get(baseline_key, current_equivalent)
+            # Oblicz aktualny ekwiwalent
+            current_equivalent = self.calculate_equivalent_with_prices(
+                current_round.current_token, 
+                target_token, 
+                current_round.current_amount,
+                current_prices
+            )
             
-            if baseline_equivalent > 0:
-                change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+            top_equivalent = current_round.top_equivalents.get(target_token, 0)
+            
+            if top_equivalent > 0:
+                change_pct = ((current_equivalent - top_equivalent) / top_equivalent * 100)
             else:
                 change_pct = 0
-                
-            usdt_value = self.calculate_equivalent(asset, 'USDT', amount)
             
-            # Określ status na podstawie zmiany
+            # Określ status
             status = "🔴"
-            if change_pct >= 2.0:
-                status = "🟢"
-            elif change_pct >= 0.5:
+            if change_pct >= self.swap_threshold:
+                status = "🟢 SWAP"
+            elif change_pct >= 0:
                 status = "🟡"
                 
-            # Dodaj aktualną cenę target tokena
-            target_price = prices.get(target_token, {}).get('bid', 0)
-            
-            # Specjalne oznaczenie dla MX
-            token_display = target_token
-            if target_token == 'MX':
-                token_display = f"🎯 {target_token}"  # Specjalna ikona dla MX
-            
             matrix_data.append({
-                'Target': token_display,
-                'Equivalent': current_equivalent,
-                'Baseline': baseline_equivalent,
-                'Change %': change_pct,
-                'USDT Value': usdt_value,
-                'Target Price': target_price,
+                'Target': target_token,
+                'Current': current_equivalent,
+                'Top': top_equivalent,
+                'Gain %': change_pct,
                 'Status': status
             })
         
         if matrix_data:
             df = pd.DataFrame(matrix_data)
-            df = df.sort_values('Change %', ascending=False)
+            df = df.sort_values('Gain %', ascending=False)
             
             st.dataframe(
                 df,
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    'Equivalent': st.column_config.NumberColumn(format="%.6f"),
-                    'Baseline': st.column_config.NumberColumn(format="%.6f"),
-                    'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
-                    'USDT Value': st.column_config.NumberColumn(format="%.2f"),
-                    'Target Price': st.column_config.NumberColumn(format="%.4f"),
+                    'Current': st.column_config.NumberColumn(format="%.6f"),
+                    'Top': st.column_config.NumberColumn(format="%.6f"),
+                    'Gain %': st.column_config.NumberColumn(format="%+.2f%%"),
                     'Status': st.column_config.TextColumn()
                 }
             )
             
-            # Podsumowanie najlepszych okazji (w tym MX)
-            best_opportunities = df[df['Change %'] > 0.5].head(3)
-            if not best_opportunities.empty:
-                st.subheader("💎 Top Swap Opportunities")
-                for idx, row in best_opportunities.iterrows():
-                    # Usuń specjalne oznaczenie dla wyświetlania
-                    clean_target = row['Target'].replace('🎯 ', '')
+            # Show best opportunities
+            best_ops = df[df['Gain %'] >= self.swap_threshold]
+            if not best_ops.empty:
+                st.subheader("💎 Best Swap Opportunities")
+                for _, row in best_ops.iterrows():
                     st.success(
-                        f"**{clean_target}**: +{row['Change %']:.2f}% "
-                        f"({asset} → {row['Equivalent']:.6f} {clean_target})"
+                        f"**{row['Target']}**: +{row['Gain %']:.2f}% gain "
+                        f"(Current: {row['Current']:.6f} vs Top: {row['Top']:.6f})"
                     )
-                    
-                    # Specjalna uwaga dla MX
-                    if clean_target == 'MX':
-                        st.info("💡 **MX**: Remember to leave some for fees!")
-        else:
-            st.warning("No swap opportunities available")
 
-    def refresh_data(self):
-        """Odświeża dane z MEXC"""
-        if st.session_state.api_initialized:
-            new_portfolio = st.session_state.mexc_api.get_account_balance()
-            new_orders = st.session_state.mexc_api.get_current_orders()
+    def render_trade_history(self):
+        """Pokazuje historię trade w rundzie"""
+        if not st.session_state.current_round or not st.session_state.current_round.trade_history:
+            return
             
-            if new_portfolio:
-                st.session_state.portfolio = new_portfolio
-                # Aktualizuj główny token do handlu
-                st.session_state.main_trading_token = self.find_main_trading_token()
-                
-            if new_orders:
-                st.session_state.orders = new_orders
-                
-            return True
-        return False
+        st.header("📋 Trade History")
+        
+        history_data = []
+        for trade in st.session_state.current_round.trade_history:
+            history_data.append({
+                'Time': trade.timestamp.strftime('%H:%M:%S'),
+                'From': f"{trade.from_amount:.6f} {trade.from_token}",
+                'To': f"{trade.to_amount:.6f} {trade.to_token}",
+                'Type': f"{trade.from_token} → {trade.to_token}"
+            })
+        
+        df = pd.DataFrame(history_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
     def auto_refresh_data(self):
         """Automatyczne odświeżanie danych"""
-        if st.session_state.tracking:
+        if st.session_state.tracking and st.session_state.api_initialized:
             current_time = datetime.now()
             
-            # Odśwież ceny co 5 sekund
+            # Odśwież ceny co 3 sekundy
             if 'last_price_refresh' not in st.session_state:
                 st.session_state.last_price_refresh = current_time
             
-            if (current_time - st.session_state.last_price_refresh).seconds >= 5:
-                new_prices = self.get_current_prices()
-                if new_prices:
-                    st.session_state.prices = new_prices
-                    st.session_state.last_price_refresh = current_time
+            if (current_time - st.session_state.last_price_refresh).seconds >= 3:
+                st.session_state.prices = self.get_current_prices_with_timestamp()
+                st.session_state.last_price_refresh = current_time
             
-            # Odśwież portfolio co 30 sekund
+            # Sprawdzaj swapy co 5 sekund
+            if 'last_swap_check' not in st.session_state:
+                st.session_state.last_swap_check = current_time
+            
+            if (current_time - st.session_state.last_swap_check).seconds >= 5:
+                if self.detect_and_process_swap():
+                    return True  # Wykryto swap - potrzeba rerun
+                st.session_state.last_swap_check = current_time
+            
+            # Odśwież portfolio co 10 sekund
             if 'last_portfolio_refresh' not in st.session_state:
                 st.session_state.last_portfolio_refresh = current_time
             
-            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 30:
-                if self.refresh_data():
-                    return True
-                st.session_state.last_portfolio_refresh = current_time
+            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 10:
+                new_portfolio = st.session_state.mexc_api.get_account_balance()
+                if new_portfolio:
+                    st.session_state.portfolio = new_portfolio
+                    st.session_state.last_portfolio_refresh = current_time
         
         return False
 
-    def render_control_panel(self):
-        """Panel kontrolny"""
-        st.sidebar.header("🎮 Control Panel")
-        
-        if st.session_state.api_initialized:
-            status = "🟢 LIVE" if st.session_state.tracking else "🔴 STOPPED"
-            st.sidebar.metric("Status", status)
-            
-            if st.session_state.main_trading_token:
-                st.sidebar.metric("Main Token", st.session_state.main_trading_token)
-            
-            if st.session_state.prices:
-                price_values = list(st.session_state.prices.values())
-                if price_values and 'last_update' in price_values[0]:
-                    last_update = price_values[0]['last_update']
-                    st.sidebar.caption(f"📊 Prices: {last_update.strftime('%H:%M:%S')}")
-            
-            if st.button("🔄 Refresh Data", use_container_width=True):
-                self.refresh_data()
-                st.session_state.prices = self.get_current_prices()
-                st.rerun()
-            
-            if st.button("📊 Reset Baseline", use_container_width=True):
-                self.initialize_baseline_from_portfolio()
-                st.success("✅ Baseline reset")
-            
-            st.sidebar.markdown("---")
-            
-            if 'baseline_time' in st.session_state:
-                st.sidebar.info(f"⏰ Baseline: {st.session_state.baseline_time.strftime('%H:%M:%S')}")
-
     def run(self):
         """Główna pętla aplikacji"""
-        st.title("📊 Crypto Portfolio Tracker - MEXC")
+        st.title("🤖 Crypto Auto Trader - MEXC")
         st.markdown("---")
         
         # Inicjalizacja
@@ -582,22 +605,19 @@ class CryptoPortfolioTracker:
         col1, col2 = st.columns([3, 1])
         
         with col1:
-            # API Setup (jeśli nie połączone)
             if not st.session_state.api_initialized:
-                st.info("🔐 Configure your MEXC API keys in the sidebar to start tracking")
+                st.info("🔐 Configure your MEXC API keys in the sidebar to start")
             
-            # Główne komponenty
             self.render_portfolio_overview()
             
             if st.session_state.api_initialized:
-                self.render_orders_overview()
-                st.markdown("---")
                 self.render_swap_matrix()
+                self.render_trade_history()
         
         with col2:
             self.setup_api_credentials()
             if st.session_state.api_initialized:
-                self.render_control_panel()
+                self.render_round_control()
         
         # Auto refresh
         if self.auto_refresh_data():
@@ -605,5 +625,5 @@ class CryptoPortfolioTracker:
 
 # Uruchomienie aplikacji
 if __name__ == "__main__":
-    app = CryptoPortfolioTracker()
+    app = CryptoAutoTrader()
     app.run()
