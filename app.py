@@ -165,11 +165,8 @@ class CryptoSwapMatrix:
                         test_response = requests.get("https://api.mexc.com/api/v3/ping", timeout=10)
                         if test_response.status_code == 200:
                             st.session_state.tracking = True
-                            st.session_state.portfolio = {
-                                'BTC': {'total': 0.1, 'free': 0.1, 'locked': 0},
-                                'USDT': {'total': 1000, 'free': 1000, 'locked': 0},
-                                'MX': {'total': 100, 'free': 100, 'locked': 0}
-                            }
+                            # Tutaj zamiast testowego portfolio pobierz prawdziwe z API:
+                            # st.session_state.portfolio = get_real_portfolio(api_key, secret_key)
                             st.success("✅ Connected to MEXC")
                             st.rerun()
                         else:
