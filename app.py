@@ -226,14 +226,20 @@ class CryptoSwapMatrix:
 
     # ================== Render matryca ==================
     def render_matrix(self):
-        if not st.session_state.round_active:
+        if 'baseline_data' not in st.session_state or not st.session_state.baseline_data:
             st.info("💡 Start a round with USDT to see matrix")
             return
+
         main_token = st.session_state.baseline_data['main_token']
+        if main_token not in st.session_state.portfolio:
+            st.info("💡 Portfolio empty for main token")
+            return
+
         amount = st.session_state.portfolio[main_token]['total']
         baseline = st.session_state.baseline_data['equivalents']
         top = st.session_state.top_equivalents
         matrix = []
+
         for token in self.tokens_to_track:
             if token == main_token:
                 continue
@@ -250,6 +256,7 @@ class CryptoSwapMatrix:
                 'Top': top_val,
                 'Δ Top %': change_top
             })
+
         df = pd.DataFrame(matrix).sort_values('Δ Top %', ascending=False)
         st.dataframe(df, use_container_width=True)
 
