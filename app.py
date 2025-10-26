@@ -33,7 +33,6 @@ class MexcPrivateAPI:
             ).hexdigest()
             return signature
         except Exception as e:
-            st.error(f"❌ Signing error: {e}")
             return ""
     
     def _make_private_request(self, endpoint: str, params: dict = None) -> Optional[dict]:
@@ -69,11 +68,9 @@ class MexcPrivateAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                st.error(f"❌ API Error {response.status_code}: {response.text}")
                 return None
                 
         except Exception as e:
-            st.error(f"❌ Request failed: {e}")
             return None
     
     def get_account_balance(self) -> Dict[str, float]:
@@ -123,7 +120,7 @@ class SimpleSwapMatrix:
         if 'portfolio' not in st.session_state:
             st.session_state.portfolio = {}
         if 'prices' not in st.session_state:
-            st.session_state.prices = self.get_current_prices()
+            st.session_state.prices = {}
         if 'tracking' not in st.session_state:
             st.session_state.tracking = False
         if 'current_asset' not in st.session_state:
@@ -132,8 +129,8 @@ class SimpleSwapMatrix:
             st.session_state.baseline_equivalents = {}
         if 'top_equivalents' not in st.session_state:
             st.session_state.top_equivalents = {}
-        if 'last_swap_time' not in st.session_state:
-            st.session_state.last_swap_time = datetime.now()
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = datetime.now()
         
     def get_current_prices(self) -> Dict[str, Dict]:
         """Pobiera aktualne ceny bid/ask"""
@@ -159,7 +156,7 @@ class SimpleSwapMatrix:
                         except:
                             continue
         except Exception as e:
-            st.error(f"❌ Błąd pobierania cen: {e}")
+            pass
         return prices
     
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
@@ -235,7 +232,6 @@ class SimpleSwapMatrix:
             if current_asset:
                 # Nowy asset - zainicjuj baseline i top
                 self.initialize_asset_tracking(current_asset)
-                st.success(f"🔄 Asset changed: {old_asset} → {current_asset}")
                 return True
         
         return False
@@ -259,14 +255,16 @@ class SimpleSwapMatrix:
         
         st.session_state.baseline_equivalents = baseline
         st.session_state.top_equivalents = top
-        st.session_state.last_swap_time = datetime.now()
 
     def update_top_equivalents(self):
         """Aktualizuje top equivalents dla aktualnego assetu"""
-        if not st.session_state.current_asset:
+        if not st.session_state.current_asset or st.session_state.current_asset == 'USDT':
             return
             
         current_asset = st.session_state.current_asset
+        if current_asset not in st.session_state.portfolio:
+            return
+            
         amount = st.session_state.portfolio[current_asset]['total']
         
         for token in self.tokens_to_track:
@@ -307,6 +305,7 @@ class SimpleSwapMatrix:
                                         self.initialize_asset_tracking(initial_asset)
                                     
                                     st.success("✅ Connected to MEXC API")
+                                    st.rerun()
                                 else:
                                     st.error("❌ Failed to load portfolio data")
                             else:
@@ -373,6 +372,9 @@ class SimpleSwapMatrix:
             return
             
         current_asset = st.session_state.current_asset
+        if current_asset not in st.session_state.portfolio:
+            return
+            
         amount = st.session_state.portfolio[current_asset]['total']
         
         if current_asset == 'USDT':
@@ -465,52 +467,41 @@ class SimpleSwapMatrix:
                 
             if best_ops:
                 st.subheader("💎 Best Opportunities")
-                for op in best_ops[:3]:  # Top 3
+                for op in best_ops[:3]:
                     if current_asset == 'USDT':
                         st.success(f"**{op['Target']}**: +{op['Change %']:.2f}% from baseline")
                     else:
                         st.success(f"**{op['Target']}**: +{op['Gain %']:.2f}% from top")
 
     def auto_refresh_data(self):
-        """Automatyczne odświeżanie danych"""
+        """Automatyczne odświeżanie danych - wywoływane przy każdym rerun"""
         if st.session_state.tracking and st.session_state.api_initialized:
             current_time = datetime.now()
             
-            # Odśwież ceny co 3 sekundy
-            if 'last_price_refresh' not in st.session_state:
-                st.session_state.last_price_refresh = current_time
-            
-            if (current_time - st.session_state.last_price_refresh).seconds >= 3:
-                st.session_state.prices = self.get_current_prices()
-                st.session_state.last_price_refresh = current_time
-            
-            # Aktualizuj top equivalents co 5 sekund
-            if 'last_top_update' not in st.session_state:
-                st.session_state.last_top_update = current_time
-            
-            if (current_time - st.session_state.last_top_update).seconds >= 5:
+            # Sprawdzaj czy minęło 3 sekundy od ostatniego odświeżenia
+            if (current_time - st.session_state.last_refresh).seconds >= 3:
+                # Odśwież ceny
+                new_prices = self.get_current_prices()
+                if new_prices:
+                    st.session_state.prices = new_prices
+                
+                # Odśwież portfolio
+                if st.session_state.mexc_api:
+                    new_portfolio = st.session_state.mexc_api.get_account_balance()
+                    if new_portfolio:
+                        st.session_state.portfolio = new_portfolio
+                
+                # Aktualizuj top equivalents (tylko dla tokenów)
                 self.update_top_equivalents()
-                st.session_state.last_top_update = current_time
-            
-            # Sprawdzaj zmianę assetu co 10 sekund
-            if 'last_asset_check' not in st.session_state:
-                st.session_state.last_asset_check = current_time
-            
-            if (current_time - st.session_state.last_asset_check).seconds >= 10:
-                if self.detect_asset_change():
-                    return True  # Wykryto zmianę assetu - potrzeba rerun
-                st.session_state.last_asset_check = current_time
-            
-            # Odśwież portfolio co 15 sekund
-            if 'last_portfolio_refresh' not in st.session_state:
-                st.session_state.last_portfolio_refresh = current_time
-            
-            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 15:
-                new_portfolio = st.session_state.mexc_api.get_account_balance()
-                if new_portfolio:
-                    st.session_state.portfolio = new_portfolio
-                    st.session_state.last_portfolio_refresh = current_time
-        
+                
+                # Sprawdź zmianę assetu
+                asset_changed = self.detect_asset_change()
+                
+                st.session_state.last_refresh = current_time
+                
+                # Jeśli były zmiany, wymuszamy rerun
+                return True
+                
         return False
 
     def render_control_panel(self):
@@ -531,9 +522,10 @@ class SimpleSwapMatrix:
                     st.sidebar.caption(f"📊 Prices: {last_update.strftime('%H:%M:%S')}")
             
             if st.sidebar.button("🔄 Refresh Now", use_container_width=True):
-                new_portfolio = st.session_state.mexc_api.get_account_balance()
-                if new_portfolio:
-                    st.session_state.portfolio = new_portfolio
+                if st.session_state.mexc_api:
+                    new_portfolio = st.session_state.mexc_api.get_account_balance()
+                    if new_portfolio:
+                        st.session_state.portfolio = new_portfolio
                 st.session_state.prices = self.get_current_prices()
                 st.rerun()
 
@@ -561,7 +553,7 @@ class SimpleSwapMatrix:
             if st.session_state.api_initialized:
                 self.render_control_panel()
         
-        # Auto refresh
+        # Auto refresh - wywołujemy przy każdym uruchomieniu
         if self.auto_refresh_data():
             st.rerun()
 
