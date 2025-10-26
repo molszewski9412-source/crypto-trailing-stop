@@ -99,7 +99,7 @@ class CryptoSwapMatrix:
         if 'secret_key' not in st.session_state:
             st.session_state.secret_key = ""
 
-    # ================== Pobranie rzeczywistego portfolio z MEXC ==================
+    # ================== Pobranie portfolio z MEXC ==================
     def get_real_portfolio(self, api_key, secret_key):
         base_url = "https://api.mexc.com"
         endpoint = "/api/v3/account"
@@ -126,36 +126,6 @@ class CryptoSwapMatrix:
             st.error("❌ Connection error")
             return {}
 
-    # ================== Detekcja akcji ==================
-    def detect_action(self):
-        portfolio = st.session_state.portfolio
-        prices = st.session_state.prices
-        old_main = st.session_state.last_main_token
-        new_main = self.find_main_token(portfolio)
-        st.session_state.last_main_token = new_main
-
-        usdt_value = portfolio.get('USDT', {}).get('total', 0)
-        total_value = sum(balance['total']*prices[a]['bid'] for a, balance in portfolio.items() if a in prices)
-        baseline_usdt = st.session_state.baseline_data.get('usdt_value', total_value)
-
-        # Start rundy: z USDT na token
-        if not st.session_state.round_active and old_main == "USDT" and new_main != "USDT":
-            st.session_state.round_active = True
-            self.set_baseline(new_main)
-            return "start_round"
-
-        # Swap między tokenami
-        if st.session_state.round_active and new_main != "USDT" and old_main != new_main:
-            self.update_top_after_swap(new_main)
-            return "swap"
-
-        # Zakończenie rundy: USDT >= 102% baseline
-        if st.session_state.round_active and new_main == "USDT" and usdt_value >= 1.02 * baseline_usdt:
-            st.session_state.round_active = False
-            return "end_round"
-
-        return "hold"
-
     # ================== Baseline ==================
     def set_baseline(self, main_token):
         portfolio = st.session_state.portfolio
@@ -171,6 +141,8 @@ class CryptoSwapMatrix:
             'usdt_value': usdt_value,
             'timestamp': datetime.now()
         }
+        # Włącz rundę jeśli baseline ustalony dla USDT
+        st.session_state.round_active = True
 
     # ================== Top equivalents ==================
     def update_top_after_swap(self, new_token):
@@ -183,6 +155,29 @@ class CryptoSwapMatrix:
             current_top = st.session_state.top_equivalents.get(token, 0)
             if value > current_top:
                 st.session_state.top_equivalents[token] = value
+
+    # ================== Detekcja akcji ==================
+    def detect_action(self):
+        portfolio = st.session_state.portfolio
+        prices = st.session_state.prices
+        old_main = st.session_state.last_main_token
+        new_main = self.find_main_token(portfolio)
+        st.session_state.last_main_token = new_main
+
+        usdt_value = portfolio.get('USDT', {}).get('total', 0)
+        baseline_usdt = st.session_state.baseline_data.get('usdt_value', usdt_value)
+
+        # Swap między tokenami
+        if st.session_state.round_active and new_main != old_main and new_main != 'USDT':
+            self.update_top_after_swap(new_main)
+            return "swap"
+
+        # Zakończenie rundy: USDT >= 102% baseline
+        if st.session_state.round_active and new_main == "USDT" and usdt_value >= 1.02 * baseline_usdt:
+            st.session_state.round_active = False
+            return "end_round"
+
+        return "hold"
 
     # ================== Panel API ==================
     def setup_api_credentials(self):
@@ -197,6 +192,8 @@ class CryptoSwapMatrix:
                     portfolio = self.get_real_portfolio(api_key, secret_key)
                     if portfolio:
                         st.session_state.portfolio = portfolio
+                        main_token = self.find_main_token(portfolio)
+                        self.set_baseline(main_token)
                         st.session_state.tracking = True
                         st.success("✅ Connected and portfolio loaded")
                         st.rerun()
@@ -231,10 +228,6 @@ class CryptoSwapMatrix:
             return
 
         main_token = st.session_state.baseline_data['main_token']
-        if main_token not in st.session_state.portfolio:
-            st.info("💡 Portfolio empty for main token")
-            return
-
         amount = st.session_state.portfolio[main_token]['total']
         baseline = st.session_state.baseline_data['equivalents']
         top = st.session_state.top_equivalents
@@ -288,9 +281,7 @@ class CryptoSwapMatrix:
         # Detekcja akcji
         if st.session_state.tracking and st.session_state.portfolio:
             action = self.detect_action()
-            if action == "start_round":
-                st.success("🎯 Round started")
-            elif action == "swap":
+            if action == "swap":
                 st.info("🔄 Swap detected")
             elif action == "end_round":
                 st.success("🏁 Round ended! Target reached")
