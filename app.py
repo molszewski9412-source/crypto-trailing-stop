@@ -117,7 +117,7 @@ class CryptoPortfolioTracker:
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
             'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
             'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
+            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER', 'MX'
         ]
         
     def init_session_state(self):
@@ -136,7 +136,9 @@ class CryptoPortfolioTracker:
             st.session_state.baseline_equivalents = {}
         if 'orders' not in st.session_state:
             st.session_state.orders = []
-    
+        if 'main_trading_token' not in st.session_state:
+            st.session_state.main_trading_token = None
+        
     def get_current_prices(self) -> Dict[str, Dict]:
         """Pobiera aktualne ceny bid/ask"""
         prices = {}
@@ -205,6 +207,24 @@ class CryptoPortfolioTracker:
             equivalent = (usdt_value / ask_price) * (1 - self.fee_rate)
             return equivalent
 
+    def find_main_trading_token(self) -> str:
+        """Znajduje token z najwyższą wartością w USDT (oprócz USDT i MX)"""
+        max_value = 0
+        main_token = None
+        prices = st.session_state.prices
+        
+        for asset, balance_info in st.session_state.portfolio.items():
+            if asset == 'USDT' or asset == 'MX':
+                continue
+                
+            if asset in prices:
+                value = balance_info['total'] * prices[asset]['bid']
+                if value > max_value:
+                    max_value = value
+                    main_token = asset
+        
+        return main_token
+
     def setup_api_credentials(self):
         """Setup bezpiecznego wprowadzania kluczy API"""
         st.sidebar.header("🔐 API Configuration")
@@ -238,6 +258,9 @@ class CryptoPortfolioTracker:
                                     st.session_state.portfolio = balance
                                     st.session_state.orders = orders
                                     st.session_state.tracking = True
+                                    
+                                    # Znajdź główny token do handlu
+                                    st.session_state.main_trading_token = self.find_main_trading_token()
                                     self.initialize_baseline_from_portfolio()
                                     st.success("✅ Connected to MEXC API - Read Only")
                                 else:
@@ -254,20 +277,19 @@ class CryptoPortfolioTracker:
         baseline = {}
         prices = st.session_state.prices
         
-        for asset, balance_info in st.session_state.portfolio.items():
-            total_amount = balance_info['total']
+        # Tylko dla głównego tokena do handlu
+        main_token = st.session_state.main_trading_token
+        if not main_token:
+            return
             
-            if asset == 'USDT':
-                # Dla USDT: baseline to ile każdego tokena można kupić
-                for target_token in self.tokens_to_track:
-                    equivalent = self.calculate_equivalent('USDT', target_token, total_amount)
-                    baseline[f"USDT_{target_token}"] = equivalent
-            else:
-                # Dla tokenów: baseline to ekwiwalenty w innych tokenach
-                for target_token in self.tokens_to_track:
-                    if target_token != asset:
-                        equivalent = self.calculate_equivalent(asset, target_token, total_amount)
-                        baseline[f"{asset}_{target_token}"] = equivalent
+        if main_token in st.session_state.portfolio:
+            total_amount = st.session_state.portfolio[main_token]['total']
+            
+            # Dla głównego tokena: baseline to ekwiwalenty w innych tokenach
+            for target_token in self.tokens_to_track:
+                if target_token != main_token and target_token != 'MX':  # Pomijamy MX
+                    equivalent = self.calculate_equivalent(main_token, target_token, total_amount)
+                    baseline[f"{main_token}_{target_token}"] = equivalent
         
         st.session_state.baseline_equivalents = baseline
         st.session_state.baseline_time = datetime.now()
@@ -287,7 +309,7 @@ class CryptoPortfolioTracker:
         return total_value
 
     def render_portfolio_overview(self):
-        """Pokazuje aktualne portfolio z MEXC"""
+        """Pokazuje aktualne portfolio z MEXC - WSZYSTKIE tokeny"""
         st.header("💰 Live Portfolio from MEXC")
         
         if not st.session_state.portfolio:
@@ -321,12 +343,22 @@ class CryptoPortfolioTracker:
                     'Value USDT': f"{value:,.2f}",
                     'Price': f"{prices[asset]['bid']:.4f}"
                 })
+            else:
+                # Tokeny bez ceny (może nie być w USDT pair)
+                portfolio_data.append({
+                    'Asset': f"{asset} ⚠️",
+                    'Free': f"{balance['free']:.6f}",
+                    'Locked': f"{balance['locked']:.6f}",
+                    'Total': f"{balance['total']:.6f}",
+                    'Value USDT': "N/A",
+                    'Price': "N/A"
+                })
         
         if portfolio_data:
             df = pd.DataFrame(portfolio_data)
             st.dataframe(df, use_container_width=True, hide_index=True)
             
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Total Value", f"${total_value:,.2f}")
             with col2:
@@ -336,6 +368,12 @@ class CryptoPortfolioTracker:
                     st.metric("P&L", f"${profit_loss:+,.2f}", f"{profit_pct:+.2f}%")
             with col3:
                 st.metric("Assets", len(portfolio_data))
+            with col4:
+                if st.session_state.main_trading_token:
+                    main_token_value = 0
+                    if st.session_state.main_trading_token in prices and st.session_state.main_trading_token in st.session_state.portfolio:
+                        main_token_value = st.session_state.portfolio[st.session_state.main_trading_token]['total'] * prices[st.session_state.main_trading_token]['bid']
+                    st.metric("Main Trading", st.session_state.main_trading_token, f"${main_token_value:,.2f}")
 
     def render_orders_overview(self):
         """Pokazuje aktualne zlecenia"""
@@ -360,72 +398,92 @@ class CryptoPortfolioTracker:
             st.dataframe(df, use_container_width=True, hide_index=True)
 
     def render_swap_matrix(self):
-        """Renderuje matrycę swapów dla każdego tokena w portfolio"""
+        """Renderuje matrycę swapów tylko dla głównego tokena do handlu"""
         if not st.session_state.tracking:
             st.info("💡 Connect to MEXC API to see swap matrix")
             return
             
+        if not st.session_state.main_trading_token:
+            st.warning("⚠️ No main trading token found in portfolio")
+            return
+            
         st.header("🎯 Swap Opportunity Matrix")
+        st.info(f"**Trading with:** {st.session_state.main_trading_token}")
         
-        for asset, balance_info in st.session_state.portfolio.items():
-            if asset == 'USDT' or balance_info['total'] <= 0:
-                continue
-                
-            self.render_asset_matrix(asset, balance_info['total'])
+        main_token = st.session_state.main_trading_token
+        if main_token in st.session_state.portfolio:
+            amount = st.session_state.portfolio[main_token]['total']
+            self.render_asset_matrix(main_token, amount)
     
     def render_asset_matrix(self, asset: str, amount: float):
-        """Renderuje matrycę dla konkretnego assetu"""
-        with st.expander(f"🔷 {asset} - {amount:.6f}"):
-            matrix_data = []
-            prices = st.session_state.prices
+        """Renderuje matrycę dla głównego tokena do handlu"""
+        matrix_data = []
+        prices = st.session_state.prices
+        
+        for target_token in self.tokens_to_track:
+            if target_token == asset or target_token == 'MX':  # Pomijamy MX w matrycy
+                continue
+                
+            current_equivalent = self.calculate_equivalent(asset, target_token, amount)
+            baseline_key = f"{asset}_{target_token}"
+            baseline_equivalent = st.session_state.baseline_equivalents.get(baseline_key, current_equivalent)
             
-            for target_token in self.tokens_to_track:
-                if target_token == asset:
-                    continue
-                    
-                current_equivalent = self.calculate_equivalent(asset, target_token, amount)
-                baseline_key = f"{asset}_{target_token}"
-                baseline_equivalent = st.session_state.baseline_equivalents.get(baseline_key, current_equivalent)
+            if baseline_equivalent > 0:
+                change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+            else:
+                change_pct = 0
                 
-                if baseline_equivalent > 0:
-                    change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
-                else:
-                    change_pct = 0
-                    
-                usdt_value = self.calculate_equivalent(asset, 'USDT', amount)
-                
-                # Określ status na podstawie zmiany
-                status = "🔴"
-                if change_pct >= 2.0:
-                    status = "🟢"
-                elif change_pct >= 0.5:
-                    status = "🟡"
-                
-                matrix_data.append({
-                    'Target': target_token,
-                    'Equivalent': current_equivalent,
-                    'Baseline': baseline_equivalent,
-                    'Change %': change_pct,
-                    'USDT Value': usdt_value,
-                    'Status': status
-                })
+            usdt_value = self.calculate_equivalent(asset, 'USDT', amount)
             
-            if matrix_data:
-                df = pd.DataFrame(matrix_data)
-                df = df.sort_values('Change %', ascending=False)
+            # Określ status na podstawie zmiany
+            status = "🔴"
+            if change_pct >= 2.0:
+                status = "🟢"
+            elif change_pct >= 0.5:
+                status = "🟡"
                 
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        'Equivalent': st.column_config.NumberColumn(format="%.6f"),
-                        'Baseline': st.column_config.NumberColumn(format="%.6f"),
-                        'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
-                        'USDT Value': st.column_config.NumberColumn(format="%.2f"),
-                        'Status': st.column_config.TextColumn()
-                    }
-                )
+            # Dodaj aktualną cenę target tokena
+            target_price = prices.get(target_token, {}).get('bid', 0)
+            
+            matrix_data.append({
+                'Target': target_token,
+                'Equivalent': current_equivalent,
+                'Baseline': baseline_equivalent,
+                'Change %': change_pct,
+                'USDT Value': usdt_value,
+                'Target Price': target_price,
+                'Status': status
+            })
+        
+        if matrix_data:
+            df = pd.DataFrame(matrix_data)
+            df = df.sort_values('Change %', ascending=False)
+            
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Equivalent': st.column_config.NumberColumn(format="%.6f"),
+                    'Baseline': st.column_config.NumberColumn(format="%.6f"),
+                    'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
+                    'USDT Value': st.column_config.NumberColumn(format="%.2f"),
+                    'Target Price': st.column_config.NumberColumn(format="%.4f"),
+                    'Status': st.column_config.TextColumn()
+                }
+            )
+            
+            # Podsumowanie najlepszych okazji
+            best_opportunities = df[df['Change %'] > 0.5].head(3)
+            if not best_opportunities.empty:
+                st.subheader("💎 Top Swap Opportunities")
+                for idx, row in best_opportunities.iterrows():
+                    st.success(
+                        f"**{row['Target']}**: +{row['Change %']:.2f}% "
+                        f"({asset} → {row['Equivalent']:.6f} {row['Target']})"
+                    )
+        else:
+            st.warning("No swap opportunities available")
 
     def refresh_data(self):
         """Odświeża dane z MEXC"""
@@ -435,6 +493,9 @@ class CryptoPortfolioTracker:
             
             if new_portfolio:
                 st.session_state.portfolio = new_portfolio
+                # Aktualizuj główny token do handlu
+                st.session_state.main_trading_token = self.find_main_trading_token()
+                
             if new_orders:
                 st.session_state.orders = new_orders
                 
@@ -474,6 +535,9 @@ class CryptoPortfolioTracker:
         if st.session_state.api_initialized:
             status = "🟢 LIVE" if st.session_state.tracking else "🔴 STOPPED"
             st.sidebar.metric("Status", status)
+            
+            if st.session_state.main_trading_token:
+                st.sidebar.metric("Main Token", st.session_state.main_trading_token)
             
             if st.session_state.prices:
                 price_values = list(st.session_state.prices.values())
