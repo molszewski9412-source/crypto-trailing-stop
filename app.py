@@ -8,38 +8,13 @@ import json
 import urllib.parse
 from datetime import datetime
 from typing import Dict, List, Optional
-from dataclasses import dataclass, asdict
-import uuid
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
-    page_title="Crypto Trader - MEXC",
-    page_icon="🤖",
+    page_title="Crypto Swap Matrix - MEXC",
+    page_icon="🔄",
     layout="wide"
 )
-
-# ================== Data Classes ==================
-@dataclass
-class Trade:
-    timestamp: datetime
-    from_token: str
-    to_token: str
-    from_amount: float
-    to_amount: float
-    prices_at_trade: Dict[str, Dict]
-    equivalent_at_trade: Dict[str, float]
-
-@dataclass
-class TradingRound:
-    round_id: str
-    start_time: datetime
-    start_prices: Dict[str, Dict]
-    baseline_equivalents: Dict[str, float]
-    top_equivalents: Dict[str, float]
-    current_token: str
-    current_amount: float
-    trade_history: List[Trade]
-    status: str
 
 class MexcPrivateAPI:
     def __init__(self, api_key: str, secret_key: str):
@@ -122,21 +97,15 @@ class MexcPrivateAPI:
         
         return balances
     
-    def get_current_orders(self) -> List[dict]:
-        """Pobiera aktualne zlecenia - tylko odczyt"""
-        data = self._make_private_request('/api/v3/openOrders')
-        return data or []
-    
     def test_connection(self) -> bool:
         """Testuje połączenie z API"""
         data = self._make_private_request('/api/v3/account')
         return data is not None
 
-class CryptoAutoTrader:
+class SimpleSwapMatrix:
     def __init__(self):
         self.fee_rate = 0.00025
         self.swap_threshold = 0.5
-        self.target_profit = 0.02
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
@@ -154,14 +123,20 @@ class CryptoAutoTrader:
         if 'portfolio' not in st.session_state:
             st.session_state.portfolio = {}
         if 'prices' not in st.session_state:
-            st.session_state.prices = self.get_current_prices_with_timestamp()
-        if 'current_round' not in st.session_state:
-            st.session_state.current_round = None
+            st.session_state.prices = self.get_current_prices()
         if 'tracking' not in st.session_state:
             st.session_state.tracking = False
+        if 'current_asset' not in st.session_state:
+            st.session_state.current_asset = None
+        if 'baseline_equivalents' not in st.session_state:
+            st.session_state.baseline_equivalents = {}
+        if 'top_equivalents' not in st.session_state:
+            st.session_state.top_equivalents = {}
+        if 'last_swap_time' not in st.session_state:
+            st.session_state.last_swap_time = datetime.now()
         
-    def get_current_prices_with_timestamp(self) -> Dict[str, Dict]:
-        """Pobiera aktualne ceny bid/ask z timestampem"""
+    def get_current_prices(self) -> Dict[str, Dict]:
+        """Pobiera aktualne ceny bid/ask"""
         prices = {}
         try:
             response = requests.get("https://api.mexc.com/api/v3/ticker/bookTicker", timeout=10)
@@ -179,7 +154,7 @@ class CryptoAutoTrader:
                                 prices[token] = {
                                     'bid': bid_price,
                                     'ask': ask_price,
-                                    'timestamp': datetime.now()
+                                    'last_update': datetime.now()
                                 }
                         except:
                             continue
@@ -187,11 +162,12 @@ class CryptoAutoTrader:
             st.error(f"❌ Błąd pobierania cen: {e}")
         return prices
     
-    def calculate_equivalent_with_prices(self, from_token: str, to_token: str, quantity: float, prices: Dict) -> float:
-        """Oblicza ekwiwalent między tokenami używając konkretnych cen"""
+    def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
+        """Oblicza ekwiwalent między tokenami"""
         if from_token == to_token:
             return quantity * (1 - self.fee_rate)
         
+        prices = st.session_state.prices
         if not prices:
             return 0.0
             
@@ -227,143 +203,83 @@ class CryptoAutoTrader:
             equivalent = (usdt_value / ask_price) * (1 - self.fee_rate)
             return equivalent
 
-    def calculate_all_equivalents(self, from_token: str, quantity: float, prices: Dict) -> Dict[str, float]:
-        """Oblicza ekwiwalenty dla wszystkich tokenów"""
-        equivalents = {}
-        for target_token in self.tokens_to_track:
-            if target_token != from_token:
-                equivalent = self.calculate_equivalent_with_prices(from_token, target_token, quantity, prices)
-                equivalents[target_token] = equivalent
-        return equivalents
-
-    def find_main_trading_token(self, portfolio: Dict) -> str:
-        """Znajduje token z najwyższą wartością w USDT (oprócz USDT)"""
+    def find_current_asset(self):
+        """Znajduje aktualny asset (najwyższa wartość w USDT)"""
         max_value = 0
-        main_token = None
+        current_asset = None
         prices = st.session_state.prices
         
-        for asset, balance_info in portfolio.items():
-            if asset == 'USDT':
-                continue
-                
+        for asset, balance_info in st.session_state.portfolio.items():
             if asset in prices:
                 value = balance_info['total'] * prices[asset]['bid']
-                if value > max_value:
-                    max_value = value
-                    main_token = asset
+            elif asset == 'USDT':
+                value = balance_info['total']
+            else:
+                continue
+                
+            if value > max_value:
+                max_value = value
+                current_asset = asset
         
-        return main_token
+        return current_asset
 
-    def start_new_round(self, selected_token: str):
-        """Rozpoczyna nową rundę handlową"""
-        current_prices = self.get_current_prices_with_timestamp()
+    def detect_asset_change(self):
+        """Wykrywa zmianę assetu i aktualizuje baseline/top"""
+        current_asset = self.find_current_asset()
         
-        if 'USDT' not in st.session_state.portfolio:
-            st.error("❌ No USDT in portfolio to start round")
+        # Sprawdź czy asset się zmienił
+        if current_asset != st.session_state.current_asset:
+            old_asset = st.session_state.current_asset
+            st.session_state.current_asset = current_asset
+            
+            if current_asset:
+                # Nowy asset - zainicjuj baseline i top
+                self.initialize_asset_tracking(current_asset)
+                st.success(f"🔄 Asset changed: {old_asset} → {current_asset}")
+                return True
+        
+        return False
+
+    def initialize_asset_tracking(self, asset: str):
+        """Inicjalizuje śledzenie dla nowego assetu"""
+        if asset not in st.session_state.portfolio:
             return
             
-        usdt_amount = st.session_state.portfolio['USDT']['total']
+        amount = st.session_state.portfolio[asset]['total']
         
         # Oblicz baseline equivalents
         baseline = {}
+        top = {}
+        
         for token in self.tokens_to_track:
-            equivalent = self.calculate_equivalent_with_prices('USDT', token, usdt_amount, current_prices)
-            baseline[token] = equivalent
+            if token != asset:
+                equivalent = self.calculate_equivalent(asset, token, amount)
+                baseline[token] = equivalent
+                top[token] = equivalent  # Początkowo top = baseline
         
-        # Stwórz nową rundę
-        new_round = TradingRound(
-            round_id=f"round_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            start_time=datetime.now(),
-            start_prices=current_prices,
-            baseline_equivalents=baseline,
-            top_equivalents=baseline.copy(),
-            current_token=selected_token,
-            current_amount=baseline[selected_token],
-            trade_history=[],
-            status='ACTIVE'
-        )
-        
-        st.session_state.current_round = new_round
-        st.session_state.tracking = True
-        st.success(f"✅ New round started: USDT → {selected_token}")
+        st.session_state.baseline_equivalents = baseline
+        st.session_state.top_equivalents = top
+        st.session_state.last_swap_time = datetime.now()
 
-    def detect_and_process_swap(self):
-        """Wykrywa manualne swapy i przetwarza je"""
-        if not st.session_state.current_round or st.session_state.current_round.status != 'ACTIVE':
-            return False
+    def update_top_equivalents(self):
+        """Aktualizuje top equivalents dla aktualnego assetu"""
+        if not st.session_state.current_asset:
+            return
             
-        current_round = st.session_state.current_round
+        current_asset = st.session_state.current_asset
+        amount = st.session_state.portfolio[current_asset]['total']
         
-        # Pobierz aktualne portfolio
-        current_portfolio = st.session_state.mexc_api.get_account_balance()
-        if not current_portfolio:
-            return False
-            
-        # Znajdź główny token
-        new_main_token = self.find_main_trading_token(current_portfolio)
-        if not new_main_token or new_main_token == current_round.current_token:
-            return False
-            
-        # SWAP WYKRYTY
-        swap_timestamp = datetime.now()
-        prices_at_swap = self.get_current_prices_with_timestamp()
-        new_amount = current_portfolio[new_main_token]['total']
-        
-        # Oblicz ekwiwalenty w momencie swapu
-        equivalents_at_swap = self.calculate_all_equivalents(new_main_token, new_amount, prices_at_swap)
-        
-        # Stwórz rekord trade
-        trade = Trade(
-            timestamp=swap_timestamp,
-            from_token=current_round.current_token,
-            to_token=new_main_token,
-            from_amount=current_round.current_amount,
-            to_amount=new_amount,
-            prices_at_trade=prices_at_swap,
-            equivalent_at_trade=equivalents_at_swap
-        )
-        
-        # Aktualizuj top equivalents
-        self.update_top_equivalents(trade)
-        
-        # Zaktualizuj rundę
-        current_round.current_token = new_main_token
-        current_round.current_amount = new_amount
-        current_round.trade_history.append(trade)
-        
-        st.success(f"🔄 Swap detected: {trade.from_token} → {trade.to_token}")
-        return True
-
-    def update_top_equivalents(self, trade: Trade):
-        """Aktualizuje top equivalents na podstawie trade"""
-        current_round = st.session_state.current_round
-        
-        # Dla nowego tokena: top = dokładna ilość z trade
-        current_round.top_equivalents[trade.to_token] = trade.to_amount
-        
-        # Dla innych tokenów: użyj ekwiwalentów z momentu trade
-        for token, equivalent in trade.equivalent_at_trade.items():
-            current_top = current_round.top_equivalents.get(token, 0)
-            if equivalent > current_top:
-                current_round.top_equivalents[token] = equivalent
-
-    def end_current_round(self):
-        """Kończy aktualną rundę"""
-        if st.session_state.current_round:
-            st.session_state.current_round.status = 'COMPLETED'
-            st.session_state.tracking = False
-            st.success("✅ Round completed")
+        for token in self.tokens_to_track:
+            if token != current_asset:
+                current_equivalent = self.calculate_equivalent(current_asset, token, amount)
+                current_top = st.session_state.top_equivalents.get(token, 0)
+                
+                if current_equivalent > current_top:
+                    st.session_state.top_equivalents[token] = current_equivalent
 
     def setup_api_credentials(self):
         """Setup bezpiecznego wprowadzania kluczy API"""
         st.sidebar.header("🔐 API Configuration")
-        
-        st.sidebar.info("""
-        **Required API Permissions:**
-        - ✅ Read Account Info  
-        - ✅ Read Orders
-        - ❌ Trading (NOT required)
-        """)
         
         with st.sidebar.form("api_config"):
             api_key = st.text_input("MEXC API Key", type="password")
@@ -382,7 +298,15 @@ class CryptoAutoTrader:
                                 balance = st.session_state.mexc_api.get_account_balance()
                                 if balance:
                                     st.session_state.portfolio = balance
-                                    st.success("✅ Connected to MEXC API - Read Only")
+                                    st.session_state.tracking = True
+                                    
+                                    # Znajdź początkowy asset
+                                    initial_asset = self.find_current_asset()
+                                    if initial_asset:
+                                        st.session_state.current_asset = initial_asset
+                                        self.initialize_asset_tracking(initial_asset)
+                                    
+                                    st.success("✅ Connected to MEXC API")
                                 else:
                                     st.error("❌ Failed to load portfolio data")
                             else:
@@ -393,8 +317,8 @@ class CryptoAutoTrader:
                     st.error("❌ Please enter both API keys")
 
     def render_portfolio_overview(self):
-        """Pokazuje aktualne portfolio z MEXC"""
-        st.header("💰 Live Portfolio from MEXC")
+        """Pokazuje aktualne portfolio"""
+        st.header("💰 Live Portfolio")
         
         if not st.session_state.portfolio:
             st.info("📊 No portfolio data available")
@@ -410,8 +334,6 @@ class CryptoAutoTrader:
                 total_value += value
                 portfolio_data.append({
                     'Asset': asset,
-                    'Free': f"{balance['free']:,.2f}",
-                    'Locked': f"{balance['locked']:,.2f}",
                     'Total': f"{balance['total']:,.2f}",
                     'Value USDT': f"{value:,.2f}",
                     'Price': "1.0000"
@@ -421,8 +343,6 @@ class CryptoAutoTrader:
                 total_value += value
                 portfolio_data.append({
                     'Asset': asset,
-                    'Free': f"{balance['free']:.6f}",
-                    'Locked': f"{balance['locked']:.6f}",
                     'Total': f"{balance['total']:.6f}",
                     'Value USDT': f"{value:,.2f}",
                     'Price': f"{prices[asset]['bid']:.4f}"
@@ -438,126 +358,118 @@ class CryptoAutoTrader:
             with col2:
                 st.metric("Assets", len(portfolio_data))
             with col3:
-                if st.session_state.current_round:
-                    st.metric("Current Round", st.session_state.current_round.current_token)
-
-    def render_round_control(self):
-        """Panel kontrolny rundy"""
-        st.sidebar.header("🎮 Round Control")
-        
-        if st.session_state.api_initialized and 'USDT' in st.session_state.portfolio:
-            if not st.session_state.current_round or st.session_state.current_round.status == 'COMPLETED':
-                # Start new round
-                available_tokens = [t for t in self.tokens_to_track if t != 'USDT']
-                selected_token = st.sidebar.selectbox("Select token to start round:", available_tokens)
-                
-                if st.sidebar.button("🚀 Start New Round", use_container_width=True):
-                    self.start_new_round(selected_token)
-                    st.rerun()
-            
-            elif st.session_state.current_round.status == 'ACTIVE':
-                # Active round controls
-                current_round = st.session_state.current_round
-                
-                st.sidebar.metric("Status", "🟢 ACTIVE")
-                st.sidebar.metric("Current Token", current_round.current_token)
-                st.sidebar.metric("Amount", f"{current_round.current_amount:.6f}")
-                
-                if st.sidebar.button("⏹️ End Round", use_container_width=True):
-                    self.end_current_round()
-                    st.rerun()
+                if st.session_state.current_asset:
+                    current_value = 0
+                    if st.session_state.current_asset == 'USDT':
+                        current_value = st.session_state.portfolio['USDT']['total']
+                    elif st.session_state.current_asset in prices:
+                        current_value = st.session_state.portfolio[st.session_state.current_asset]['total'] * prices[st.session_state.current_asset]['bid']
+                    st.metric("Current Asset", st.session_state.current_asset, f"${current_value:,.2f}")
 
     def render_swap_matrix(self):
         """Renderuje matrycę swap opportunities"""
-        if not st.session_state.current_round or st.session_state.current_round.status != 'ACTIVE':
-            st.info("💡 Start a trading round to see swap opportunities")
+        if not st.session_state.current_asset:
+            st.info("💡 Connect to MEXC to see swap matrix")
             return
             
-        current_round = st.session_state.current_round
-        current_prices = st.session_state.prices
+        current_asset = st.session_state.current_asset
+        amount = st.session_state.portfolio[current_asset]['total']
         
-        st.header("🎯 Swap Opportunity Matrix")
-        st.info(f"**Trading with:** {current_round.current_token} ({current_round.current_amount:.6f})")
+        if current_asset == 'USDT':
+            st.header("🛒 Purchase Matrix - USDT")
+            st.info("Baseline: Last token → USDT swap time")
+        else:
+            st.header("🎯 Swap Matrix - " + current_asset)
+            st.info("Baseline: Round start | Top: Historical max")
         
         matrix_data = []
+        
         for target_token in self.tokens_to_track:
-            if target_token == current_round.current_token:
+            if target_token == current_asset:
                 continue
                 
-            # Oblicz aktualny ekwiwalent
-            current_equivalent = self.calculate_equivalent_with_prices(
-                current_round.current_token, 
-                target_token, 
-                current_round.current_amount,
-                current_prices
-            )
+            current_equivalent = self.calculate_equivalent(current_asset, target_token, amount)
             
-            top_equivalent = current_round.top_equivalents.get(target_token, 0)
-            
-            if top_equivalent > 0:
-                change_pct = ((current_equivalent - top_equivalent) / top_equivalent * 100)
-            else:
-                change_pct = 0
-            
-            # Określ status
-            status = "🔴"
-            if change_pct >= self.swap_threshold:
-                status = "🟢 SWAP"
-            elif change_pct >= 0:
-                status = "🟡"
+            if current_asset == 'USDT':
+                # Dla USDT: porównanie z baseline
+                baseline_equivalent = st.session_state.baseline_equivalents.get(target_token, current_equivalent)
+                if baseline_equivalent > 0:
+                    change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+                else:
+                    change_pct = 0
                 
-            matrix_data.append({
-                'Target': target_token,
-                'Current': current_equivalent,
-                'Top': top_equivalent,
-                'Gain %': change_pct,
-                'Status': status
-            })
+                status = "🟢" if change_pct >= self.swap_threshold else "🔴"
+                
+                matrix_data.append({
+                    'Target': target_token,
+                    'Current': current_equivalent,
+                    'Baseline': baseline_equivalent,
+                    'Change %': change_pct,
+                    'Status': status
+                })
+            else:
+                # Dla tokenów: porównanie z top equivalent
+                top_equivalent = st.session_state.top_equivalents.get(target_token, current_equivalent)
+                if top_equivalent > 0:
+                    gain_pct = ((current_equivalent - top_equivalent) / top_equivalent * 100)
+                else:
+                    gain_pct = 0
+                
+                status = "🟢 SWAP" if gain_pct >= self.swap_threshold else "🔴"
+                
+                matrix_data.append({
+                    'Target': target_token,
+                    'Current': current_equivalent,
+                    'Top': top_equivalent,
+                    'Gain %': gain_pct,
+                    'Status': status
+                })
         
         if matrix_data:
-            df = pd.DataFrame(matrix_data)
-            df = df.sort_values('Gain %', ascending=False)
-            
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'Current': st.column_config.NumberColumn(format="%.6f"),
-                    'Top': st.column_config.NumberColumn(format="%.6f"),
-                    'Gain %': st.column_config.NumberColumn(format="%+.2f%%"),
-                    'Status': st.column_config.TextColumn()
-                }
-            )
+            if current_asset == 'USDT':
+                df = pd.DataFrame(matrix_data)
+                df = df.sort_values('Change %', ascending=False)
+                
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Current': st.column_config.NumberColumn(format="%.6f"),
+                        'Baseline': st.column_config.NumberColumn(format="%.6f"),
+                        'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
+                        'Status': st.column_config.TextColumn()
+                    }
+                )
+            else:
+                df = pd.DataFrame(matrix_data)
+                df = df.sort_values('Gain %', ascending=False)
+                
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Current': st.column_config.NumberColumn(format="%.6f"),
+                        'Top': st.column_config.NumberColumn(format="%.6f"),
+                        'Gain %': st.column_config.NumberColumn(format="%+.2f%%"),
+                        'Status': st.column_config.TextColumn()
+                    }
+                )
             
             # Show best opportunities
-            best_ops = df[df['Gain %'] >= self.swap_threshold]
-            if not best_ops.empty:
-                st.subheader("💎 Best Swap Opportunities")
-                for _, row in best_ops.iterrows():
-                    st.success(
-                        f"**{row['Target']}**: +{row['Gain %']:.2f}% gain "
-                        f"(Current: {row['Current']:.6f} vs Top: {row['Top']:.6f})"
-                    )
-
-    def render_trade_history(self):
-        """Pokazuje historię trade w rundzie"""
-        if not st.session_state.current_round or not st.session_state.current_round.trade_history:
-            return
-            
-        st.header("📋 Trade History")
-        
-        history_data = []
-        for trade in st.session_state.current_round.trade_history:
-            history_data.append({
-                'Time': trade.timestamp.strftime('%H:%M:%S'),
-                'From': f"{trade.from_amount:.6f} {trade.from_token}",
-                'To': f"{trade.to_amount:.6f} {trade.to_token}",
-                'Type': f"{trade.from_token} → {trade.to_token}"
-            })
-        
-        df = pd.DataFrame(history_data)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+            if current_asset == 'USDT':
+                best_ops = [op for op in matrix_data if op['Change %'] >= self.swap_threshold]
+            else:
+                best_ops = [op for op in matrix_data if op['Gain %'] >= self.swap_threshold]
+                
+            if best_ops:
+                st.subheader("💎 Best Opportunities")
+                for op in best_ops[:3]:  # Top 3
+                    if current_asset == 'USDT':
+                        st.success(f"**{op['Target']}**: +{op['Change %']:.2f}% from baseline")
+                    else:
+                        st.success(f"**{op['Target']}**: +{op['Gain %']:.2f}% from top")
 
     def auto_refresh_data(self):
         """Automatyczne odświeżanie danych"""
@@ -569,23 +481,31 @@ class CryptoAutoTrader:
                 st.session_state.last_price_refresh = current_time
             
             if (current_time - st.session_state.last_price_refresh).seconds >= 3:
-                st.session_state.prices = self.get_current_prices_with_timestamp()
+                st.session_state.prices = self.get_current_prices()
                 st.session_state.last_price_refresh = current_time
             
-            # Sprawdzaj swapy co 5 sekund
-            if 'last_swap_check' not in st.session_state:
-                st.session_state.last_swap_check = current_time
+            # Aktualizuj top equivalents co 5 sekund
+            if 'last_top_update' not in st.session_state:
+                st.session_state.last_top_update = current_time
             
-            if (current_time - st.session_state.last_swap_check).seconds >= 5:
-                if self.detect_and_process_swap():
-                    return True  # Wykryto swap - potrzeba rerun
-                st.session_state.last_swap_check = current_time
+            if (current_time - st.session_state.last_top_update).seconds >= 5:
+                self.update_top_equivalents()
+                st.session_state.last_top_update = current_time
             
-            # Odśwież portfolio co 10 sekund
+            # Sprawdzaj zmianę assetu co 10 sekund
+            if 'last_asset_check' not in st.session_state:
+                st.session_state.last_asset_check = current_time
+            
+            if (current_time - st.session_state.last_asset_check).seconds >= 10:
+                if self.detect_asset_change():
+                    return True  # Wykryto zmianę assetu - potrzeba rerun
+                st.session_state.last_asset_check = current_time
+            
+            # Odśwież portfolio co 15 sekund
             if 'last_portfolio_refresh' not in st.session_state:
                 st.session_state.last_portfolio_refresh = current_time
             
-            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 10:
+            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 15:
                 new_portfolio = st.session_state.mexc_api.get_account_balance()
                 if new_portfolio:
                     st.session_state.portfolio = new_portfolio
@@ -593,9 +513,33 @@ class CryptoAutoTrader:
         
         return False
 
+    def render_control_panel(self):
+        """Panel kontrolny"""
+        st.sidebar.header("🎮 Control Panel")
+        
+        if st.session_state.api_initialized:
+            status = "🟢 LIVE" if st.session_state.tracking else "🔴 STOPPED"
+            st.sidebar.metric("Status", status)
+            
+            if st.session_state.current_asset:
+                st.sidebar.metric("Current Asset", st.session_state.current_asset)
+            
+            if st.session_state.prices:
+                price_values = list(st.session_state.prices.values())
+                if price_values and 'last_update' in price_values[0]:
+                    last_update = price_values[0]['last_update']
+                    st.sidebar.caption(f"📊 Prices: {last_update.strftime('%H:%M:%S')}")
+            
+            if st.sidebar.button("🔄 Refresh Now", use_container_width=True):
+                new_portfolio = st.session_state.mexc_api.get_account_balance()
+                if new_portfolio:
+                    st.session_state.portfolio = new_portfolio
+                st.session_state.prices = self.get_current_prices()
+                st.rerun()
+
     def run(self):
         """Główna pętla aplikacji"""
-        st.title("🤖 Crypto Auto Trader - MEXC")
+        st.title("🔄 Crypto Swap Matrix - MEXC")
         st.markdown("---")
         
         # Inicjalizacja
@@ -609,15 +553,13 @@ class CryptoAutoTrader:
                 st.info("🔐 Configure your MEXC API keys in the sidebar to start")
             
             self.render_portfolio_overview()
-            
-            if st.session_state.api_initialized:
-                self.render_swap_matrix()
-                self.render_trade_history()
+            st.markdown("---")
+            self.render_swap_matrix()
         
         with col2:
             self.setup_api_credentials()
             if st.session_state.api_initialized:
-                self.render_round_control()
+                self.render_control_panel()
         
         # Auto refresh
         if self.auto_refresh_data():
@@ -625,5 +567,5 @@ class CryptoAutoTrader:
 
 # Uruchomienie aplikacji
 if __name__ == "__main__":
-    app = CryptoAutoTrader()
+    app = SimpleSwapMatrix()
     app.run()
