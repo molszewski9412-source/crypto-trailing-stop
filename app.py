@@ -98,6 +98,17 @@ class CryptoSwapMatrix:
             st.session_state.api_key = ""
         if 'secret_key' not in st.session_state:
             st.session_state.secret_key = ""
+        if 'last_price_update' not in st.session_state:
+            st.session_state.last_price_update = datetime.now()
+
+    # ================== Aktualizacja cen co 3 sekundy ==================
+    def update_prices(self):
+        now = datetime.now()
+        if (now - st.session_state.last_price_update).seconds >= 3:
+            new_prices = self.get_prices()
+            if new_prices:
+                st.session_state.prices = new_prices
+                st.session_state.last_price_update = now
 
     # ================== Pobranie portfolio z MEXC ==================
     def get_real_portfolio(self, api_key, secret_key):
@@ -147,19 +158,16 @@ class CryptoSwapMatrix:
     # ================== Top equivalents ==================
     def update_top_after_swap(self, new_token):
         amount = st.session_state.portfolio[new_token]['total']
-        current_equivalents = {}
         for target_token in self.tokens_to_track:
             if target_token != new_token:
-                current_equivalents[target_token] = self.calculate_equivalent(new_token, target_token, amount)
-        for token, value in current_equivalents.items():
-            current_top = st.session_state.top_equivalents.get(token, 0)
-            if value > current_top:
-                st.session_state.top_equivalents[token] = value
+                current = self.calculate_equivalent(new_token, target_token, amount)
+                current_top = st.session_state.top_equivalents.get(target_token, 0)
+                if current > current_top:
+                    st.session_state.top_equivalents[target_token] = current
 
     # ================== Detekcja akcji ==================
     def detect_action(self):
         portfolio = st.session_state.portfolio
-        prices = st.session_state.prices
         old_main = st.session_state.last_main_token
         new_main = self.find_main_token(portfolio)
         st.session_state.last_main_token = new_main
@@ -196,7 +204,7 @@ class CryptoSwapMatrix:
                         self.set_baseline(main_token)
                         st.session_state.tracking = True
                         st.success("✅ Connected and portfolio loaded")
-                        st.rerun()
+                        st.experimental_rerun()
 
     # ================== Render portfolio ==================
     def render_portfolio(self):
@@ -221,36 +229,45 @@ class CryptoSwapMatrix:
         st.dataframe(df, use_container_width=True)
         st.metric("Total Value", f"${total_value:,.2f}")
 
-    # ================== Render matryca ==================
+    # ================== Render matrycy ==================
     def render_matrix(self):
-        if 'baseline_data' not in st.session_state or not st.session_state.baseline_data:
+        if not st.session_state.round_active or not st.session_state.baseline_data:
             st.info("💡 Start a round with USDT to see matrix")
             return
 
-        main_token = st.session_state.baseline_data['main_token']
+        main_token = st.session_state.last_main_token
+        if main_token not in st.session_state.portfolio:
+            st.info("No main token in portfolio")
+            return
+
         amount = st.session_state.portfolio[main_token]['total']
-        baseline = st.session_state.baseline_data['equivalents']
-        top = st.session_state.top_equivalents
+        baseline_eq = st.session_state.baseline_data['equivalents']
+        baseline_usdt = st.session_state.baseline_data['usdt_value']
+        top_eq = st.session_state.top_equivalents
+
         matrix = []
 
         for token in self.tokens_to_track:
             if token == main_token:
                 continue
             current = self.calculate_equivalent(main_token, token, amount)
-            base = baseline.get(token, current)
-            top_val = top.get(token, current)
+            base = baseline_eq.get(token, current)
+            top_val = top_eq.get(token, current)
             change_base = ((current - base)/base*100) if base > 0 else 0
             change_top = ((current - top_val)/top_val*100) if top_val > 0 else 0
+            value_usdt = current * st.session_state.prices[token]['bid'] if token != 'USDT' else current
             matrix.append({
                 'Target': token,
-                'Current': current,
-                'Baseline': base,
-                'Δ Baseline %': change_base,
-                'Top': top_val,
-                'Δ Top %': change_top
+                'Current Tokens': f"{current:.6f}",
+                'Value USDT': f"${value_usdt:,.2f}",
+                'Baseline Tokens': f"{base:.6f}",
+                'Δ Baseline %': f"{change_base:+.2f}%",
+                'Top Tokens': f"{top_val:.6f}",
+                'Δ Top %': f"{change_top:+.2f}%"
             })
 
         df = pd.DataFrame(matrix).sort_values('Δ Top %', ascending=False)
+        st.header(f"🎯 Swap Matrix - {main_token}")
         st.dataframe(df, use_container_width=True)
 
     # ================== Render kontrolny panel ==================
@@ -259,14 +276,15 @@ class CryptoSwapMatrix:
         if st.session_state.tracking:
             st.sidebar.metric("Status", "🟢 LIVE")
             if st.sidebar.button("🔄 Refresh Prices"):
-                st.session_state.prices = self.get_prices()
-                st.rerun()
+                self.update_prices()
+                st.experimental_rerun()
 
     # ================== Run ==================
     def run(self):
         st.title("🔄 Crypto Swap Matrix - Auto")
         st.markdown("---")
         self.init_session_state()
+        self.update_prices()
         col1, col2 = st.columns([3,1])
         with col1:
             if not st.session_state.tracking:
@@ -278,6 +296,7 @@ class CryptoSwapMatrix:
             self.setup_api_credentials()
             if st.session_state.tracking:
                 self.render_control_panel()
+
         # Detekcja akcji
         if st.session_state.tracking and st.session_state.portfolio:
             action = self.detect_action()
@@ -285,6 +304,11 @@ class CryptoSwapMatrix:
                 st.info("🔄 Swap detected")
             elif action == "end_round":
                 st.success("🏁 Round ended! Target reached")
+
+        # Automatyczne odświeżanie
+        if st.session_state.tracking:
+            time.sleep(3)
+            st.experimental_rerun()
 
 # ================== Uruchomienie ==================
 if __name__ == "__main__":
