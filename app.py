@@ -228,9 +228,9 @@ class CryptoSwapMatrix:
                 })
         df = pd.DataFrame(data)
         st.dataframe(df, use_container_width=True)
-        st.metric("Total Value", f"${total_value:,.2f}")
+        st.metric("Total Value USDT", f"${total_value:,.2f}")
 
-    # ================== Render matrix with coloring ==================
+    # ================== Render matrix with Δ USDT % ==================
     def render_matrix(self):
         if not st.session_state.round_active or not st.session_state.baseline_data:
             st.info("💡 Start a round with USDT to see matrix")
@@ -243,6 +243,7 @@ class CryptoSwapMatrix:
 
         amount = st.session_state.portfolio[main_token]['total']
         baseline_eq = st.session_state.baseline_data['equivalents']
+        baseline_usdt = st.session_state.baseline_data['usdt_value']
         top_eq = st.session_state.top_equivalents
 
         matrix = []
@@ -250,25 +251,28 @@ class CryptoSwapMatrix:
         for token in self.tokens_to_track:
             if token == main_token:
                 continue
-            current = self.calculate_equivalent(main_token, token, amount)
-            base = baseline_eq.get(token, current)
-            top_val = top_eq.get(token, current)
-            change_base = ((current - base)/base*100) if base > 0 else 0
-            change_top = ((current - top_val)/top_val*100) if top_val > 0 else 0
-            value_usdt = current * st.session_state.prices[token]['bid'] if token != 'USDT' else current
+            current_tokens = self.calculate_equivalent(main_token, token, amount)
+            base_tokens = baseline_eq.get(token, current_tokens)
+            top_tokens = top_eq.get(token, current_tokens)
+            # procentowe zmiany
+            delta_base = (current_tokens - base_tokens) / base_tokens * 100 if base_tokens > 0 else 0
+            delta_top = (current_tokens - top_tokens) / top_tokens * 100 if top_tokens > 0 else 0
+            value_usdt = current_tokens * st.session_state.prices[token]['bid'] if token != 'USDT' else current_tokens
+            delta_usdt = (value_usdt - baseline_usdt) / baseline_usdt * 100 if baseline_usdt > 0 else 0
+
             matrix.append({
                 'Target': token,
-                'Current Tokens': current,
+                'Current Tokens': current_tokens,
                 'Value USDT': value_usdt,
-                'Baseline Tokens': base,
-                'Δ Baseline %': change_base,
-                'Top Tokens': top_val,
-                'Δ Top %': change_top
+                'Δ Baseline %': delta_base,
+                'Top Tokens': top_tokens,
+                'Δ Top %': delta_top,
+                'Δ USDT %': delta_usdt
             })
 
-        df = pd.DataFrame(matrix).sort_values('Δ Top %', ascending=False)
+        df = pd.DataFrame(matrix).sort_values('Δ USDT %', ascending=False)
 
-        # Kolorowanie
+        # Kolorowanie Δ
         def color_vals(val):
             if val >= self.swap_threshold:
                 return 'background-color: #b7e4c7'  # zielony
@@ -277,7 +281,7 @@ class CryptoSwapMatrix:
             else:
                 return 'background-color: #f5cac3'  # czerwony
 
-        styled_df = df.style.applymap(color_vals, subset=['Δ Baseline %','Δ Top %'])
+        styled_df = df.style.applymap(color_vals, subset=['Δ Baseline %','Δ Top %','Δ USDT %'])
         st.header(f"🎯 Swap Matrix - {main_token}")
         st.dataframe(styled_df, use_container_width=True)
 
