@@ -11,8 +11,8 @@ from typing import Dict, List, Optional
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
-    page_title="Crypto Auto Trader - MEXC",
-    page_icon="🤖",
+    page_title="Crypto Portfolio Tracker - MEXC",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -26,7 +26,7 @@ class MexcPrivateAPI:
         """Generuje podpis HMAC SHA256 dla requestów MEXC"""
         try:
             # MEXC wymaga specjalnego formatowania query string
-            query_string = '&'.join([f"{k}={v}" for k, v in sorted(params.items()) if v is not None])
+            query_string = urllib.parse.urlencode(params, doseq=True)
             signature = hmac.new(
                 self.secret_key.encode('utf-8'),
                 query_string.encode('utf-8'),
@@ -37,14 +37,14 @@ class MexcPrivateAPI:
             st.error(f"❌ Signing error: {e}")
             return ""
     
-    def _make_private_request(self, endpoint: str, params: dict = None, method: str = "GET") -> Optional[dict]:
-        """Wysyła autoryzowany request do MEXC"""
+    def _make_private_request(self, endpoint: str, params: dict = None) -> Optional[dict]:
+        """Wysyła autoryzowany request do MEXC tylko do odczytu"""
         try:
             timestamp = int(time.time() * 1000)
             params = params or {}
             params.update({
                 'timestamp': timestamp,
-                'recvWindow': 60000  # Zwiększone okno odbioru
+                'recvWindow': 5000
             })
             
             # Usuń None values
@@ -61,27 +61,12 @@ class MexcPrivateAPI:
                 'Content-Type': 'application/json'
             }
             
-            if method == "GET":
-                response = requests.get(
-                    f"{self.base_url}{endpoint}",
-                    params=params,
-                    headers=headers,
-                    timeout=10
-                )
-            elif method == "POST":
-                response = requests.post(
-                    f"{self.base_url}{endpoint}",
-                    params=params,
-                    headers=headers,
-                    timeout=10
-                )
-            elif method == "DELETE":
-                response = requests.delete(
-                    f"{self.base_url}{endpoint}",
-                    params=params,
-                    headers=headers,
-                    timeout=10
-                )
+            response = requests.get(
+                f"{self.base_url}{endpoint}",
+                params=params,
+                headers=headers,
+                timeout=10
+            )
             
             if response.status_code == 200:
                 return response.json()
@@ -114,45 +99,26 @@ class MexcPrivateAPI:
         
         return balances
     
-    def get_current_orders(self, symbol: str = None) -> List[dict]:
-        """Pobiera aktualne zlecenia"""
-        params = {}
-        if symbol:
-            params['symbol'] = symbol
-            
-        data = self._make_private_request('/api/v3/openOrders', params)
+    def get_current_orders(self) -> List[dict]:
+        """Pobiera aktualne zlecenia - tylko odczyt"""
+        data = self._make_private_request('/api/v3/openOrders')
         return data or []
-    
-    def create_order(self, symbol: str, side: str, order_type: str, 
-                    quantity: float, price: float = None) -> Optional[dict]:
-        """Wysyła zlecenie na giełdę"""
-        params = {
-            'symbol': symbol,
-            'side': side.upper(),
-            'type': order_type.upper(),
-            'quantity': quantity
-        }
-        
-        if price and order_type.upper() == 'LIMIT':
-            params['price'] = price
-            params['timeInForce'] = 'GTC'
-        
-        data = self._make_private_request('/api/v3/order', params, "POST")
-        return data
     
     def test_connection(self) -> bool:
         """Testuje połączenie z API"""
         data = self._make_private_request('/api/v3/account')
         return data is not None
 
-class CryptoAutoTrader:
+class CryptoPortfolioTracker:
     def __init__(self):
         self.fee_rate = 0.00025
-        self.target_profit = 0.02
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
-            'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP'
-        ]  # Skrócona lista dla testów
+            'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
+            'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
+            'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
+            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
+        ]
         
     def init_session_state(self):
         """Inicjalizacja session state"""
@@ -168,8 +134,8 @@ class CryptoAutoTrader:
             st.session_state.tracking = False
         if 'baseline_equivalents' not in st.session_state:
             st.session_state.baseline_equivalents = {}
-        if 'trade_history' not in st.session_state:
-            st.session_state.trade_history = []
+        if 'orders' not in st.session_state:
+            st.session_state.orders = []
     
     def get_current_prices(self) -> Dict[str, Dict]:
         """Pobiera aktualne ceny bid/ask"""
@@ -244,14 +210,14 @@ class CryptoAutoTrader:
         st.sidebar.header("🔐 API Configuration")
         
         st.sidebar.info("""
-        **API Permissions Required:**
-        - ✅ Spot & Margin Trading
+        **Required API Permissions:**
         - ✅ Read Account Info  
-        - ✅ Enable Trading
+        - ✅ Read Orders
+        - ❌ Trading (NOT required)
         """)
         
         with st.sidebar.form("api_config"):
-            api_key = st.text_input("MEXC API Key", type="password", help="Your MEXC API Key")
+            api_key = st.text_input("MEXC API Key", type="password", help="Your MEXC API Key with READ permissions")
             secret_key = st.text_input("MEXC Secret Key", type="password", help="Your MEXC Secret Key")
             
             if st.form_submit_button("🔗 Connect to MEXC"):
@@ -266,11 +232,14 @@ class CryptoAutoTrader:
                                 
                                 # Load initial data
                                 balance = st.session_state.mexc_api.get_account_balance()
+                                orders = st.session_state.mexc_api.get_current_orders()
+                                
                                 if balance:
                                     st.session_state.portfolio = balance
+                                    st.session_state.orders = orders
                                     st.session_state.tracking = True
                                     self.initialize_baseline_from_portfolio()
-                                    st.success("✅ Connected to MEXC API")
+                                    st.success("✅ Connected to MEXC API - Read Only")
                                 else:
                                     st.error("❌ Failed to load portfolio data")
                             else:
@@ -335,7 +304,9 @@ class CryptoAutoTrader:
                 total_value += value
                 portfolio_data.append({
                     'Asset': asset,
-                    'Amount': f"{balance['total']:,.2f}",
+                    'Free': f"{balance['free']:,.2f}",
+                    'Locked': f"{balance['locked']:,.2f}",
+                    'Total': f"{balance['total']:,.2f}",
                     'Value USDT': f"{value:,.2f}",
                     'Price': "1.0000"
                 })
@@ -344,7 +315,9 @@ class CryptoAutoTrader:
                 total_value += value
                 portfolio_data.append({
                     'Asset': asset,
-                    'Amount': f"{balance['total']:.6f}",
+                    'Free': f"{balance['free']:.6f}",
+                    'Locked': f"{balance['locked']:.6f}",
+                    'Total': f"{balance['total']:.6f}",
                     'Value USDT': f"{value:,.2f}",
                     'Price': f"{prices[asset]['bid']:.4f}"
                 })
@@ -364,13 +337,35 @@ class CryptoAutoTrader:
             with col3:
                 st.metric("Assets", len(portfolio_data))
 
+    def render_orders_overview(self):
+        """Pokazuje aktualne zlecenia"""
+        if not st.session_state.orders:
+            return
+            
+        st.header("📋 Active Orders")
+        
+        orders_data = []
+        for order in st.session_state.orders:
+            orders_data.append({
+                'Symbol': order.get('symbol', ''),
+                'Side': order.get('side', ''),
+                'Type': order.get('type', ''),
+                'Quantity': float(order.get('origQty', 0)),
+                'Price': float(order.get('price', 0)),
+                'Status': order.get('status', '')
+            })
+        
+        if orders_data:
+            df = pd.DataFrame(orders_data)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
     def render_swap_matrix(self):
         """Renderuje matrycę swapów dla każdego tokena w portfolio"""
         if not st.session_state.tracking:
-            st.info("💡 Start tracking to see swap matrix")
+            st.info("💡 Connect to MEXC API to see swap matrix")
             return
             
-        st.header("🎯 Swap Matrix")
+        st.header("🎯 Swap Opportunity Matrix")
         
         for asset, balance_info in st.session_state.portfolio.items():
             if asset == 'USDT' or balance_info['total'] <= 0:
@@ -380,112 +375,71 @@ class CryptoAutoTrader:
     
     def render_asset_matrix(self, asset: str, amount: float):
         """Renderuje matrycę dla konkretnego assetu"""
-        st.subheader(f"🔷 {asset} - {amount:.6f}")
-        
-        matrix_data = []
-        prices = st.session_state.prices
-        
-        for target_token in self.tokens_to_track:
-            if target_token == asset:
-                continue
+        with st.expander(f"🔷 {asset} - {amount:.6f}"):
+            matrix_data = []
+            prices = st.session_state.prices
+            
+            for target_token in self.tokens_to_track:
+                if target_token == asset:
+                    continue
+                    
+                current_equivalent = self.calculate_equivalent(asset, target_token, amount)
+                baseline_key = f"{asset}_{target_token}"
+                baseline_equivalent = st.session_state.baseline_equivalents.get(baseline_key, current_equivalent)
                 
-            current_equivalent = self.calculate_equivalent(asset, target_token, amount)
-            baseline_key = f"{asset}_{target_token}"
-            baseline_equivalent = st.session_state.baseline_equivalents.get(baseline_key, current_equivalent)
-            
-            if baseline_equivalent > 0:
-                change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
-            else:
-                change_pct = 0
+                if baseline_equivalent > 0:
+                    change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+                else:
+                    change_pct = 0
+                    
+                usdt_value = self.calculate_equivalent(asset, 'USDT', amount)
                 
-            usdt_value = self.calculate_equivalent(asset, 'USDT', amount)
+                # Określ status na podstawie zmiany
+                status = "🔴"
+                if change_pct >= 2.0:
+                    status = "🟢"
+                elif change_pct >= 0.5:
+                    status = "🟡"
+                
+                matrix_data.append({
+                    'Target': target_token,
+                    'Equivalent': current_equivalent,
+                    'Baseline': baseline_equivalent,
+                    'Change %': change_pct,
+                    'USDT Value': usdt_value,
+                    'Status': status
+                })
             
-            matrix_data.append({
-                'Target Token': target_token,
-                'Current Equivalent': current_equivalent,
-                'Baseline': baseline_equivalent,
-                'Change %': change_pct,
-                'USDT Value': usdt_value
-            })
-        
-        if matrix_data:
-            df = pd.DataFrame(matrix_data)
-            df = df.sort_values('Change %', ascending=False)
-            
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    'Current Equivalent': st.column_config.NumberColumn(format="%.6f"),
-                    'Baseline': st.column_config.NumberColumn(format="%.6f"),
-                    'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
-                    'USDT Value': st.column_config.NumberColumn(format="%.2f")
-                }
-            )
+            if matrix_data:
+                df = pd.DataFrame(matrix_data)
+                df = df.sort_values('Change %', ascending=False)
+                
+                st.dataframe(
+                    df,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        'Equivalent': st.column_config.NumberColumn(format="%.6f"),
+                        'Baseline': st.column_config.NumberColumn(format="%.6f"),
+                        'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
+                        'USDT Value': st.column_config.NumberColumn(format="%.2f"),
+                        'Status': st.column_config.TextColumn()
+                    }
+                )
 
-    def refresh_portfolio(self):
-        """Odświeża portfolio z MEXC"""
+    def refresh_data(self):
+        """Odświeża dane z MEXC"""
         if st.session_state.api_initialized:
             new_portfolio = st.session_state.mexc_api.get_account_balance()
+            new_orders = st.session_state.mexc_api.get_current_orders()
+            
             if new_portfolio:
                 st.session_state.portfolio = new_portfolio
-                return True
+            if new_orders:
+                st.session_state.orders = new_orders
+                
+            return True
         return False
-
-    def render_trading_interface(self):
-        """Interface do ręcznego handlu"""
-        if not st.session_state.api_initialized:
-            return
-            
-        st.header("🎮 Manual Trading")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("💰 Buy Order")
-            with st.form("buy_order"):
-                buy_token = st.selectbox("Token to Buy", self.tokens_to_track)
-                buy_amount = st.number_input("Amount", min_value=0.0001, value=0.001, step=0.001)
-                buy_price = st.number_input("Price (USDT)", min_value=0.0001, value=1000.0, step=1.0)
-                
-                if st.form_submit_button("🟢 Place Buy Order"):
-                    symbol = f"{buy_token}USDT"
-                    result = st.session_state.mexc_api.create_order(
-                        symbol=symbol,
-                        side="BUY",
-                        order_type="LIMIT",
-                        quantity=buy_amount,
-                        price=buy_price
-                    )
-                    if result:
-                        st.success(f"✅ Buy order placed: {buy_amount} {buy_token}")
-                        self.refresh_portfolio()
-
-        with col2:
-            st.subheader("💵 Sell Order") 
-            # Only show tokens that are in portfolio
-            portfolio_tokens = [t for t in self.tokens_to_track if t in st.session_state.portfolio and st.session_state.portfolio[t]['total'] > 0]
-            
-            with st.form("sell_order"):
-                sell_token = st.selectbox("Token to Sell", portfolio_tokens, key="sell_token")
-                if sell_token in st.session_state.portfolio:
-                    max_amount = st.session_state.portfolio[sell_token]['total']
-                    sell_amount = st.number_input("Amount", min_value=0.0001, value=min(0.001, max_amount), max_value=max_amount, step=0.001, key="sell_amount")
-                    sell_price = st.number_input("Price (USDT)", min_value=0.0001, value=1000.0, step=1.0, key="sell_price")
-                
-                    if st.form_submit_button("🔴 Place Sell Order"):
-                        symbol = f"{sell_token}USDT"
-                        result = st.session_state.mexc_api.create_order(
-                            symbol=symbol,
-                            side="SELL", 
-                            order_type="LIMIT",
-                            quantity=sell_amount,
-                            price=sell_price
-                        )
-                        if result:
-                            st.success(f"✅ Sell order placed: {sell_amount} {sell_token}")
-                            self.refresh_portfolio()
 
     def auto_refresh_data(self):
         """Automatyczne odświeżanie danych"""
@@ -502,12 +456,12 @@ class CryptoAutoTrader:
                     st.session_state.prices = new_prices
                     st.session_state.last_price_refresh = current_time
             
-            # Odśwież portfolio co 15 sekund
+            # Odśwież portfolio co 30 sekund
             if 'last_portfolio_refresh' not in st.session_state:
                 st.session_state.last_portfolio_refresh = current_time
             
-            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 15:
-                if self.refresh_portfolio():
+            if (current_time - st.session_state.last_portfolio_refresh).seconds >= 30:
+                if self.refresh_data():
                     return True
                 st.session_state.last_portfolio_refresh = current_time
         
@@ -525,19 +479,16 @@ class CryptoAutoTrader:
                 price_values = list(st.session_state.prices.values())
                 if price_values and 'last_update' in price_values[0]:
                     last_update = price_values[0]['last_update']
-                    st.sidebar.caption(f"📊 Last update: {last_update.strftime('%H:%M:%S')}")
+                    st.sidebar.caption(f"📊 Prices: {last_update.strftime('%H:%M:%S')}")
             
-            col1, col2 = st.sidebar.columns(2)
-            with col1:
-                if st.button("🔄 Refresh Now", use_container_width=True):
-                    self.refresh_portfolio()
-                    st.session_state.prices = self.get_current_prices()
-                    st.rerun()
+            if st.button("🔄 Refresh Data", use_container_width=True):
+                self.refresh_data()
+                st.session_state.prices = self.get_current_prices()
+                st.rerun()
             
-            with col2:
-                if st.button("📊 Reset Baseline", use_container_width=True):
-                    self.initialize_baseline_from_portfolio()
-                    st.success("✅ Baseline reset")
+            if st.button("📊 Reset Baseline", use_container_width=True):
+                self.initialize_baseline_from_portfolio()
+                st.success("✅ Baseline reset")
             
             st.sidebar.markdown("---")
             
@@ -546,7 +497,7 @@ class CryptoAutoTrader:
 
     def run(self):
         """Główna pętla aplikacji"""
-        st.title("🤖 Crypto Auto Trader - MEXC Integration")
+        st.title("📊 Crypto Portfolio Tracker - MEXC")
         st.markdown("---")
         
         # Inicjalizacja
@@ -558,14 +509,15 @@ class CryptoAutoTrader:
         with col1:
             # API Setup (jeśli nie połączone)
             if not st.session_state.api_initialized:
-                st.info("🔐 Configure your MEXC API keys in the sidebar to start")
+                st.info("🔐 Configure your MEXC API keys in the sidebar to start tracking")
             
             # Główne komponenty
             self.render_portfolio_overview()
-            st.markdown("---")
-            self.render_swap_matrix()
-            st.markdown("---")
-            self.render_trading_interface()
+            
+            if st.session_state.api_initialized:
+                self.render_orders_overview()
+                st.markdown("---")
+                self.render_swap_matrix()
         
         with col2:
             self.setup_api_credentials()
@@ -578,5 +530,5 @@ class CryptoAutoTrader:
 
 # Uruchomienie aplikacji
 if __name__ == "__main__":
-    app = CryptoAutoTrader()
+    app = CryptoPortfolioTracker()
     app.run()
