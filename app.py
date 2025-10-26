@@ -152,7 +152,6 @@ class CryptoSwapMatrix:
             'usdt_value': usdt_value,
             'timestamp': datetime.now()
         }
-        # Włącz rundę jeśli baseline ustalony dla USDT
         st.session_state.round_active = True
 
     # ================== Top equivalents ==================
@@ -175,12 +174,10 @@ class CryptoSwapMatrix:
         usdt_value = portfolio.get('USDT', {}).get('total', 0)
         baseline_usdt = st.session_state.baseline_data.get('usdt_value', usdt_value)
 
-        # Swap między tokenami
         if st.session_state.round_active and new_main != old_main and new_main != 'USDT':
             self.update_top_after_swap(new_main)
             return "swap"
 
-        # Zakończenie rundy: USDT >= 102% baseline
         if st.session_state.round_active and new_main == "USDT" and usdt_value >= 1.02 * baseline_usdt:
             st.session_state.round_active = False
             return "end_round"
