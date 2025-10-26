@@ -208,13 +208,13 @@ class CryptoPortfolioTracker:
             return equivalent
 
     def find_main_trading_token(self) -> str:
-        """Znajduje token z najwyższą wartością w USDT (oprócz USDT i MX)"""
+        """Znajduje token z najwyższą wartością w USDT (oprócz USDT)"""
         max_value = 0
         main_token = None
         prices = st.session_state.prices
         
         for asset, balance_info in st.session_state.portfolio.items():
-            if asset == 'USDT' or asset == 'MX':
+            if asset == 'USDT':
                 continue
                 
             if asset in prices:
@@ -285,9 +285,9 @@ class CryptoPortfolioTracker:
         if main_token in st.session_state.portfolio:
             total_amount = st.session_state.portfolio[main_token]['total']
             
-            # Dla głównego tokena: baseline to ekwiwalenty w innych tokenach
+            # Dla głównego tokena: baseline to ekwiwalenty w innych tokenach (w tym MX)
             for target_token in self.tokens_to_track:
-                if target_token != main_token and target_token != 'MX':  # Pomijamy MX
+                if target_token != main_token:  # MX jest teraz uwzględniony!
                     equivalent = self.calculate_equivalent(main_token, target_token, total_amount)
                     baseline[f"{main_token}_{target_token}"] = equivalent
         
@@ -416,12 +416,12 @@ class CryptoPortfolioTracker:
             self.render_asset_matrix(main_token, amount)
     
     def render_asset_matrix(self, asset: str, amount: float):
-        """Renderuje matrycę dla głównego tokena do handlu"""
+        """Renderuje matrycę dla głównego tokena do handlu (w tym MX)"""
         matrix_data = []
         prices = st.session_state.prices
         
         for target_token in self.tokens_to_track:
-            if target_token == asset or target_token == 'MX':  # Pomijamy MX w matrycy
+            if target_token == asset:  # Tylko pomijamy ten sam token
                 continue
                 
             current_equivalent = self.calculate_equivalent(asset, target_token, amount)
@@ -445,8 +445,13 @@ class CryptoPortfolioTracker:
             # Dodaj aktualną cenę target tokena
             target_price = prices.get(target_token, {}).get('bid', 0)
             
+            # Specjalne oznaczenie dla MX
+            token_display = target_token
+            if target_token == 'MX':
+                token_display = f"🎯 {target_token}"  # Specjalna ikona dla MX
+            
             matrix_data.append({
-                'Target': target_token,
+                'Target': token_display,
                 'Equivalent': current_equivalent,
                 'Baseline': baseline_equivalent,
                 'Change %': change_pct,
@@ -473,15 +478,21 @@ class CryptoPortfolioTracker:
                 }
             )
             
-            # Podsumowanie najlepszych okazji
+            # Podsumowanie najlepszych okazji (w tym MX)
             best_opportunities = df[df['Change %'] > 0.5].head(3)
             if not best_opportunities.empty:
                 st.subheader("💎 Top Swap Opportunities")
                 for idx, row in best_opportunities.iterrows():
+                    # Usuń specjalne oznaczenie dla wyświetlania
+                    clean_target = row['Target'].replace('🎯 ', '')
                     st.success(
-                        f"**{row['Target']}**: +{row['Change %']:.2f}% "
-                        f"({asset} → {row['Equivalent']:.6f} {row['Target']})"
+                        f"**{clean_target}**: +{row['Change %']:.2f}% "
+                        f"({asset} → {row['Equivalent']:.6f} {clean_target})"
                     )
+                    
+                    # Specjalna uwaga dla MX
+                    if clean_target == 'MX':
+                        st.info("💡 **MX**: Remember to leave some for fees!")
         else:
             st.warning("No swap opportunities available")
 
