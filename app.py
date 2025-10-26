@@ -7,6 +7,7 @@ import hmac
 import hashlib
 import urllib.parse
 import time
+from streamlit_autorefresh import st_autorefresh
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
@@ -15,16 +16,19 @@ st.set_page_config(
     layout="wide"
 )
 
+# Odświeżanie co 3 sekundy
+st_autorefresh(interval=3000, key="refresh")
+
 class CryptoSwapMatrix:
     def __init__(self):
         self.fee_rate = 0.00025
         self.swap_threshold = 0.5
         self.tokens_to_track = [
-            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
-            'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
-            'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
-            'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER', 'MX', 'USDT'
+            'BTC','ETH','BNB','ADA','SOL','XRP','DOT','DOGE','AVAX','LTC',
+            'LINK','ATOM','XLM','BCH','ALGO','FIL','ETC','XTZ','AAVE','COMP',
+            'UNI','CRV','SUSHI','YFI','SNX','1INCH','ZRX','TRX','VET','ONE',
+            'CELO','RSR','NKN','STORJ','DODO','KAVA','RUNE','SAND','MANA','ENJ',
+            'CHZ','ALICE','NEAR','ARB','OP','APT','SUI','SEI','INJ','RENDER','MX','USDT'
         ]
 
     # ================== Pobieranie cen ==================
@@ -101,7 +105,7 @@ class CryptoSwapMatrix:
         if 'last_price_update' not in st.session_state:
             st.session_state.last_price_update = datetime.now()
 
-    # ================== Aktualizacja cen co 3 sekundy ==================
+    # ================== Aktualizacja cen ==================
     def update_prices(self):
         now = datetime.now()
         if (now - st.session_state.last_price_update).seconds >= 3:
@@ -226,7 +230,7 @@ class CryptoSwapMatrix:
         st.dataframe(df, use_container_width=True)
         st.metric("Total Value", f"${total_value:,.2f}")
 
-    # ================== Render matrycy ==================
+    # ================== Render matrix with coloring ==================
     def render_matrix(self):
         if not st.session_state.round_active or not st.session_state.baseline_data:
             st.info("💡 Start a round with USDT to see matrix")
@@ -239,7 +243,6 @@ class CryptoSwapMatrix:
 
         amount = st.session_state.portfolio[main_token]['total']
         baseline_eq = st.session_state.baseline_data['equivalents']
-        baseline_usdt = st.session_state.baseline_data['usdt_value']
         top_eq = st.session_state.top_equivalents
 
         matrix = []
@@ -255,19 +258,30 @@ class CryptoSwapMatrix:
             value_usdt = current * st.session_state.prices[token]['bid'] if token != 'USDT' else current
             matrix.append({
                 'Target': token,
-                'Current Tokens': f"{current:.6f}",
-                'Value USDT': f"${value_usdt:,.2f}",
-                'Baseline Tokens': f"{base:.6f}",
-                'Δ Baseline %': f"{change_base:+.2f}%",
-                'Top Tokens': f"{top_val:.6f}",
-                'Δ Top %': f"{change_top:+.2f}%"
+                'Current Tokens': current,
+                'Value USDT': value_usdt,
+                'Baseline Tokens': base,
+                'Δ Baseline %': change_base,
+                'Top Tokens': top_val,
+                'Δ Top %': change_top
             })
 
         df = pd.DataFrame(matrix).sort_values('Δ Top %', ascending=False)
-        st.header(f"🎯 Swap Matrix - {main_token}")
-        st.dataframe(df, use_container_width=True)
 
-    # ================== Render kontrolny panel ==================
+        # Kolorowanie
+        def color_vals(val):
+            if val >= self.swap_threshold:
+                return 'background-color: #b7e4c7'  # zielony
+            elif val >= 0:
+                return 'background-color: #fff3b0'  # żółty
+            else:
+                return 'background-color: #f5cac3'  # czerwony
+
+        styled_df = df.style.applymap(color_vals, subset=['Δ Baseline %','Δ Top %'])
+        st.header(f"🎯 Swap Matrix - {main_token}")
+        st.dataframe(styled_df, use_container_width=True)
+
+    # ================== Render control panel ==================
     def render_control_panel(self):
         st.sidebar.header("🎮 Control Panel")
         if st.session_state.tracking:
@@ -301,11 +315,6 @@ class CryptoSwapMatrix:
                 st.info("🔄 Swap detected")
             elif action == "end_round":
                 st.success("🏁 Round ended! Target reached")
-
-        # Automatyczne odświeżanie
-        if st.session_state.tracking:
-            time.sleep(3)
-            st.experimental_rerun()
 
 # ================== Uruchomienie ==================
 if __name__ == "__main__":
