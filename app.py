@@ -1,139 +1,32 @@
+
 import streamlit as st
 import pandas as pd
 import requests
-import hmac
-import hashlib
 import time
-import json
-import urllib.parse
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # ================== Konfiguracja strony ==================
 st.set_page_config(
-    page_title="Crypto Swap Matrix - MEXC",
+    page_title="Crypto Swap Matrix - Single Slot",
     page_icon="🔄",
     layout="wide"
 )
 
-class MexcPrivateAPI:
-    def __init__(self, api_key: str, secret_key: str):
-        self.api_key = api_key
-        self.secret_key = secret_key
-        self.base_url = "https://api.mexc.com"
-        
-    def _sign_request(self, params: dict) -> str:
-        """Generuje podpis HMAC SHA256 dla requestów MEXC"""
-        try:
-            query_string = urllib.parse.urlencode(params, doseq=True)
-            signature = hmac.new(
-                self.secret_key.encode('utf-8'),
-                query_string.encode('utf-8'),
-                hashlib.sha256
-            ).hexdigest()
-            return signature
-        except Exception as e:
-            return ""
-    
-    def _make_private_request(self, endpoint: str, params: dict = None) -> Optional[dict]:
-        """Wysyła autoryzowany request do MEXC tylko do odczytu"""
-        try:
-            timestamp = int(time.time() * 1000)
-            params = params or {}
-            params.update({
-                'timestamp': timestamp,
-                'recvWindow': 5000
-            })
-            
-            params = {k: v for k, v in params.items() if v is not None}
-            
-            signature = self._sign_request(params)
-            if not signature:
-                return None
-                
-            params['signature'] = signature
-            
-            headers = {
-                'X-MEXC-APIKEY': self.api_key,
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(
-                f"{self.base_url}{endpoint}",
-                params=params,
-                headers=headers,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return None
-                
-        except Exception as e:
-            return None
-    
-    def get_account_balance(self) -> Dict[str, float]:
-        """Pobiera pełne portfolio z MEXC"""
-        data = self._make_private_request('/api/v3/account')
-        balances = {}
-        
-        if data and 'balances' in data:
-            for balance in data['balances']:
-                asset = balance['asset']
-                free = float(balance['free'])
-                locked = float(balance['locked'])
-                total = free + locked
-                
-                if total > 0:
-                    balances[asset] = {
-                        'free': free,
-                        'locked': locked,
-                        'total': total
-                    }
-        
-        return balances
-    
-    def test_connection(self) -> bool:
-        """Testuje połączenie z API"""
-        data = self._make_private_request('/api/v3/account')
-        return data is not None
-
-class SimpleSwapMatrix:
+class SingleSlotSwapMatrix:
     def __init__(self):
         self.fee_rate = 0.00025
-        self.swap_threshold = 0.5
+        self.target_profit = 0.02
         self.tokens_to_track = [
             'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
             'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
             'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
             'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER', 'MX'
+            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
         ]
-        
-    def init_session_state(self):
-        """Inicjalizacja session state"""
-        if 'api_initialized' not in st.session_state:
-            st.session_state.api_initialized = False
-        if 'mexc_api' not in st.session_state:
-            st.session_state.mexc_api = None
-        if 'portfolio' not in st.session_state:
-            st.session_state.portfolio = {}
-        if 'prices' not in st.session_state:
-            st.session_state.prices = {}
-        if 'tracking' not in st.session_state:
-            st.session_state.tracking = False
-        if 'current_asset' not in st.session_state:
-            st.session_state.current_asset = None
-        if 'baseline_equivalents' not in st.session_state:
-            st.session_state.baseline_equivalents = {}
-        if 'top_equivalents' not in st.session_state:
-            st.session_state.top_equivalents = {}
-        if 'last_refresh' not in st.session_state:
-            st.session_state.last_refresh = datetime.now()
-        
-    def get_current_prices(self) -> Dict[str, Dict]:
-        """Pobiera aktualne ceny bid/ask"""
+    
+    def get_prices(self) -> Dict:
+        """Pobiera aktualne ceny z MEXC"""
         prices = {}
         try:
             response = requests.get("https://api.mexc.com/api/v3/ticker/bookTicker", timeout=10)
@@ -155,10 +48,10 @@ class SimpleSwapMatrix:
                                 }
                         except:
                             continue
+            return prices
         except Exception as e:
-            pass
-        return prices
-    
+            return {}
+
     def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
         """Oblicza ekwiwalent między tokenami"""
         if from_token == to_token:
@@ -168,6 +61,7 @@ class SimpleSwapMatrix:
         if not prices:
             return 0.0
             
+        # Dla USDT -> Token
         if from_token == 'USDT':
             if to_token not in prices:
                 return 0.0
@@ -177,6 +71,7 @@ class SimpleSwapMatrix:
             equivalent = (quantity / ask_price) * (1 - self.fee_rate)
             return equivalent
         
+        # Dla Token -> USDT
         elif to_token == 'USDT':
             if from_token not in prices:
                 return 0.0
@@ -186,6 +81,7 @@ class SimpleSwapMatrix:
             equivalent = quantity * bid_price * (1 - self.fee_rate)
             return equivalent
         
+        # Dla Token -> Token
         else:
             if from_token not in prices or to_token not in prices:
                 return 0.0
@@ -200,338 +96,367 @@ class SimpleSwapMatrix:
             equivalent = (usdt_value / ask_price) * (1 - self.fee_rate)
             return equivalent
 
-    def find_current_asset(self):
-        """Znajduje aktualny asset (najwyższa wartość w USDT)"""
-        max_value = 0
-        current_asset = None
-        prices = st.session_state.prices
-        
-        for asset, balance_info in st.session_state.portfolio.items():
-            if asset in prices:
-                value = balance_info['total'] * prices[asset]['bid']
-            elif asset == 'USDT':
-                value = balance_info['total']
-            else:
-                continue
-                
-            if value > max_value:
-                max_value = value
-                current_asset = asset
-        
-        return current_asset
+    def calculate_sell_price_for_profit(self, purchase_price: float) -> float:
+        """Oblicza cenę sprzedaży dla zysku 2% po opłatach"""
+        required_gross_return = (1 + self.target_profit) / (1 - self.fee_rate)
+        return purchase_price * required_gross_return
 
-    def detect_asset_change(self):
-        """Wykrywa zmianę assetu i aktualizuje baseline/top"""
-        current_asset = self.find_current_asset()
+    def initialize_baseline(self):
+        """Inicjalizuje baseline dla aktualnego assetu"""
+        asset = st.session_state.current_asset
         
-        # Sprawdź czy asset się zmienił
-        if current_asset != st.session_state.current_asset:
-            old_asset = st.session_state.current_asset
-            st.session_state.current_asset = current_asset
-            
-            if current_asset:
-                # Nowy asset - zainicjuj baseline i top
-                self.initialize_asset_tracking(current_asset)
-                return True
-        
-        return False
-
-    def initialize_asset_tracking(self, asset: str):
-        """Inicjalizuje śledzenie dla nowego assetu"""
-        if asset not in st.session_state.portfolio:
-            return
-            
-        amount = st.session_state.portfolio[asset]['total']
-        
-        # Oblicz baseline equivalents
-        baseline = {}
-        top = {}
-        
-        for token in self.tokens_to_track:
-            if token != asset:
-                equivalent = self.calculate_equivalent(asset, token, amount)
+        if asset['type'] == 'USDT':
+            baseline = {}
+            for token in self.tokens_to_track:
+                equivalent = self.calculate_equivalent('USDT', token, asset['amount'])
                 baseline[token] = equivalent
-                top[token] = equivalent  # Początkowo top = baseline
-        
-        st.session_state.baseline_equivalents = baseline
-        st.session_state.top_equivalents = top
-
-    def update_top_equivalents(self):
-        """Aktualizuje top equivalents dla aktualnego assetu"""
-        if not st.session_state.current_asset or st.session_state.current_asset == 'USDT':
-            return
+            st.session_state.baseline_equivalents = baseline
             
-        current_asset = st.session_state.current_asset
-        if current_asset not in st.session_state.portfolio:
-            return
-            
-        amount = st.session_state.portfolio[current_asset]['total']
-        
-        for token in self.tokens_to_track:
-            if token != current_asset:
-                current_equivalent = self.calculate_equivalent(current_asset, token, amount)
-                current_top = st.session_state.top_equivalents.get(token, 0)
-                
-                if current_equivalent > current_top:
-                    st.session_state.top_equivalents[token] = current_equivalent
-
-    def setup_api_credentials(self):
-        """Setup bezpiecznego wprowadzania kluczy API"""
-        st.sidebar.header("🔐 API Configuration")
-        
-        with st.sidebar.form("api_config"):
-            api_key = st.text_input("MEXC API Key", type="password")
-            secret_key = st.text_input("MEXC Secret Key", type="password")
-            
-            if st.form_submit_button("🔗 Connect to MEXC"):
-                if api_key and secret_key:
-                    with st.spinner("Testing API connection..."):
-                        try:
-                            test_api = MexcPrivateAPI(api_key, secret_key)
-                            if test_api.test_connection():
-                                st.session_state.mexc_api = test_api
-                                st.session_state.api_initialized = True
-                                
-                                # Load initial data
-                                balance = st.session_state.mexc_api.get_account_balance()
-                                if balance:
-                                    st.session_state.portfolio = balance
-                                    st.session_state.tracking = True
-                                    
-                                    # Znajdź początkowy asset
-                                    initial_asset = self.find_current_asset()
-                                    if initial_asset:
-                                        st.session_state.current_asset = initial_asset
-                                        self.initialize_asset_tracking(initial_asset)
-                                    
-                                    st.success("✅ Connected to MEXC API")
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Failed to load portfolio data")
-                            else:
-                                st.error("❌ API connection failed")
-                        except Exception as e:
-                            st.error(f"❌ Connection error: {str(e)}")
-                else:
-                    st.error("❌ Please enter both API keys")
-
-    def render_portfolio_overview(self):
-        """Pokazuje aktualne portfolio"""
-        st.header("💰 Live Portfolio")
-        
-        if not st.session_state.portfolio:
-            st.info("📊 No portfolio data available")
-            return
-        
-        prices = st.session_state.prices
-        portfolio_data = []
-        total_value = 0
-        
-        for asset, balance in st.session_state.portfolio.items():
-            if asset == 'USDT':
-                value = balance['total']
-                total_value += value
-                portfolio_data.append({
-                    'Asset': asset,
-                    'Total': f"{balance['total']:,.2f}",
-                    'Value USDT': f"{value:,.2f}",
-                    'Price': "1.0000"
-                })
-            elif asset in prices:
-                value = balance['total'] * prices[asset]['bid']
-                total_value += value
-                portfolio_data.append({
-                    'Asset': asset,
-                    'Total': f"{balance['total']:.6f}",
-                    'Value USDT': f"{value:,.2f}",
-                    'Price': f"{prices[asset]['bid']:.4f}"
-                })
-        
-        if portfolio_data:
-            df = pd.DataFrame(portfolio_data)
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Value", f"${total_value:,.2f}")
-            with col2:
-                st.metric("Assets", len(portfolio_data))
-            with col3:
-                if st.session_state.current_asset:
-                    current_value = 0
-                    if st.session_state.current_asset == 'USDT':
-                        current_value = st.session_state.portfolio['USDT']['total']
-                    elif st.session_state.current_asset in prices:
-                        current_value = st.session_state.portfolio[st.session_state.current_asset]['total'] * prices[st.session_state.current_asset]['bid']
-                    st.metric("Current Asset", st.session_state.current_asset, f"${current_value:,.2f}")
-
-    def render_swap_matrix(self):
-        """Renderuje matrycę swap opportunities"""
-        if not st.session_state.current_asset:
-            st.info("💡 Connect to MEXC to see swap matrix")
-            return
-            
-        current_asset = st.session_state.current_asset
-        if current_asset not in st.session_state.portfolio:
-            return
-            
-        amount = st.session_state.portfolio[current_asset]['total']
-        
-        if current_asset == 'USDT':
-            st.header("🛒 Purchase Matrix - USDT")
-            st.info("Baseline: Last token → USDT swap time")
         else:
-            st.header("🎯 Swap Matrix - " + current_asset)
-            st.info("Baseline: Round start | Top: Historical max")
+            baseline = {}
+            for token in self.tokens_to_track:
+                if token != asset['token']:
+                    equivalent = self.calculate_equivalent(asset['token'], token, asset['amount'])
+                    baseline[token] = equivalent
+            st.session_state.baseline_equivalents = baseline
+        
+        st.session_state.baseline_time = datetime.now()
+
+    def render_control_panel(self):
+        """Panel kontrolny"""
+        st.sidebar.header("🎮 Sterowanie")
+        
+        status = "🟢 AKTYWNE" if st.session_state.tracking else "🔴 WYŁĄCZONE"
+        st.sidebar.metric("Status śledzenia", status)
+        
+        if st.session_state.prices:
+            price_values = list(st.session_state.prices.values())
+            if price_values and 'last_update' in price_values[0]:
+                last_update = price_values[0]['last_update']
+                st.sidebar.caption(f"🕒 Ostatnie dane: {last_update.strftime('%H:%M:%S')}")
+        
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            if st.button("▶ Start", use_container_width=True) and not st.session_state.tracking:
+                if st.session_state.prices:
+                    st.session_state.tracking = True
+                    self.initialize_baseline()
+                    st.rerun()
+                else:
+                    st.error("❌ Brak danych cenowych")
+        
+        with col2:
+            if st.button("⏹ Stop", use_container_width=True) and st.session_state.tracking:
+                st.session_state.tracking = False
+                st.rerun()
+        
+        st.sidebar.markdown("---")
+        
+        if 'baseline_time' in st.session_state:
+            st.sidebar.info(f"📊 Baseline z: {st.session_state.baseline_time.strftime('%H:%M:%S')}")
+
+    def render_asset_input(self):
+        """Input dla assetu"""
+        st.header("💰 Stan Portfolio - Jeden Slot")
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col1:
+            asset_type = st.radio(
+                "Posiadam:",
+                ["USDT", "Token"],
+                horizontal=True,
+                key="asset_type_input"
+            )
+        
+        with col2:
+            if asset_type == "USDT":
+                usdt_amount = st.number_input(
+                    "Ilość USDT:",
+                    min_value=1.0,
+                    value=1000.0,
+                    step=100.0,
+                    key="usdt_amount_input"
+                )
+                new_asset = {
+                    'type': 'USDT',
+                    'amount': usdt_amount,
+                    'token': None,
+                    'purchase_price': None
+                }
+            else:
+                token = st.selectbox("Token:", self.tokens_to_track, key="token_select")
+                token_amount = st.number_input(
+                    f"Ilość {token}:",
+                    min_value=0.000001,
+                    value=1.0,
+                    step=0.1,
+                    format="%.6f",
+                    key="token_amount_input"
+                )
+                purchase_price = st.number_input(
+                    "Cena zakupu (USDT):",
+                    min_value=0.000001,
+                    value=1000.0,
+                    step=1.0,
+                    key="purchase_price_input"
+                )
+                new_asset = {
+                    'type': 'TOKEN',
+                    'amount': token_amount,
+                    'token': token,
+                    'purchase_price': purchase_price
+                }
+        
+        with col3:
+            current_asset = st.session_state.current_asset
+            asset_changed = (new_asset['type'] != current_asset['type'] or 
+                           new_asset['amount'] != current_asset['amount'] or
+                           (new_asset['type'] == 'TOKEN' and 
+                            new_asset['token'] != current_asset.get('token')))
+            
+            if asset_changed:
+                st.session_state.current_asset = new_asset
+                if st.session_state.tracking:
+                    self.initialize_baseline()
+                st.rerun()
+            
+            asset = st.session_state.current_asset
+            if asset['type'] == 'USDT':
+                st.metric("Stan", f"{asset['amount']:,.2f} USDT")
+            else:
+                current_price = st.session_state.prices.get(asset['token'], {}).get('bid', 0)
+                current_value = asset['amount'] * current_price
+                purchase_value = asset['amount'] * asset['purchase_price']
+                profit_loss = current_value - purchase_value
+                profit_pct = (profit_loss / purchase_value * 100) if purchase_value > 0 else 0
+                
+                st.metric(
+                    "Stan", 
+                    f"{asset['amount']:.6f} {asset['token']}",
+                    delta=f"{profit_pct:+.2f}%"
+                )
+
+    def render_matrix(self, placeholder):
+        """Renderuje matrycę ekwiwalentów z placeholder"""
+        if 'baseline_equivalents' not in st.session_state or not st.session_state.tracking:
+            placeholder.info("💡 Kliknij 'Start' aby rozpocząć śledzenie")
+            return
+        
+        asset = st.session_state.current_asset
+        prices = st.session_state.prices
+        
+        if not prices:
+            placeholder.error("❌ Brak danych cenowych")
+            return
         
         matrix_data = []
         
-        for target_token in self.tokens_to_track:
-            if target_token == current_asset:
-                continue
-                
-            current_equivalent = self.calculate_equivalent(current_asset, target_token, amount)
+        if asset['type'] == 'USDT':
+            placeholder.header("📊 Matryca zakupów - Śledzenie % zmiany od baseline")
+            placeholder.info("🎯 Cel: Kupić więcej tokenów niż przy inicjacji")
             
-            if current_asset == 'USDT':
-                # Dla USDT: porównanie z baseline
-                baseline_equivalent = st.session_state.baseline_equivalents.get(target_token, current_equivalent)
+            for token in self.tokens_to_track:
+                if token in prices:
+                    current_equivalent = self.calculate_equivalent('USDT', token, asset['amount'])
+                    baseline_equivalent = st.session_state.baseline_equivalents.get(token, current_equivalent)
+                    
+                    if baseline_equivalent > 0:
+                        change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
+                    else:
+                        change_pct = 0
+                    
+                    usdt_value = current_equivalent * prices[token]['bid'] * (1 - self.fee_rate)
+                    
+                    matrix_data.append({
+                        'Token': token,
+                        'Ekwiwalent': current_equivalent,
+                        'Baseline': baseline_equivalent,
+                        'Zmiana %': change_pct,
+                        'Wartość USDT': usdt_value,
+                        'Cena zakupu': prices[token]['ask']
+                    })
+            
+            if matrix_data:
+                df = pd.DataFrame(matrix_data)
+                df = df.sort_values('Zmiana %', ascending=False)
+                
+                placeholder.dataframe(
+                    df,
+                    use_container_width=True,
+                    column_config={
+                        'Ekwiwalent': st.column_config.NumberColumn(format="%.6f"),
+                        'Baseline': st.column_config.NumberColumn(format="%.6f"),
+                        'Zmiana %': st.column_config.NumberColumn(format="%+.2f%%"),
+                        'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
+                        'Cena zakupu': st.column_config.NumberColumn(format="%.4f")
+                    }
+                )
+            else:
+                placeholder.error("❌ Brak danych do wyświetlenia")
+            
+        else:
+            placeholder.header(f"📈 Correlation Matrix - {asset['token']}")
+            placeholder.info("🎯 Cel: Akumulować więcej tokenów poprzez wymianę")
+            
+            current_token = asset['token']
+            current_amount = asset['amount']
+            
+            for token in self.tokens_to_track:
+                if token == current_token or token not in prices:
+                    continue
+                
+                current_equivalent = self.calculate_equivalent(current_token, token, current_amount)
+                baseline_equivalent = st.session_state.baseline_equivalents.get(token, current_equivalent)
+                
                 if baseline_equivalent > 0:
                     change_pct = ((current_equivalent - baseline_equivalent) / baseline_equivalent * 100)
                 else:
                     change_pct = 0
                 
-                status = "🟢" if change_pct >= self.swap_threshold else "🔴"
+                usdt_value = self.calculate_equivalent(current_token, 'USDT', current_amount)
                 
-                matrix_data.append({
-                    'Target': target_token,
-                    'Current': current_equivalent,
-                    'Baseline': baseline_equivalent,
-                    'Change %': change_pct,
-                    'Status': status
-                })
-            else:
-                # Dla tokenów: porównanie z top equivalent
-                top_equivalent = st.session_state.top_equivalents.get(target_token, current_equivalent)
-                if top_equivalent > 0:
-                    gain_pct = ((current_equivalent - top_equivalent) / top_equivalent * 100)
+                if asset['purchase_price']:
+                    sell_target_price = self.calculate_sell_price_for_profit(asset['purchase_price'])
+                    current_price = prices[current_token]['bid']
+                    profit_pct = ((current_price - asset['purchase_price']) / asset['purchase_price'] * 100)
                 else:
-                    gain_pct = 0
-                
-                status = "🟢 SWAP" if gain_pct >= self.swap_threshold else "🔴"
+                    sell_target_price = 0
+                    profit_pct = 0
                 
                 matrix_data.append({
-                    'Target': target_token,
-                    'Current': current_equivalent,
-                    'Top': top_equivalent,
-                    'Gain %': gain_pct,
-                    'Status': status
+                    'Token': token,
+                    'Ekwiwalent': current_equivalent,
+                    'Baseline': baseline_equivalent,
+                    'Zmiana %': change_pct,
+                    'Wartość USDT': usdt_value,
+                    'Sell Price +2%': sell_target_price,
+                    'Aktualny zysk USDT': profit_pct
                 })
-        
-        if matrix_data:
-            if current_asset == 'USDT':
+            
+            if matrix_data:
                 df = pd.DataFrame(matrix_data)
-                df = df.sort_values('Change %', ascending=False)
+                df = df.sort_values('Zmiana %', ascending=False)
                 
-                st.dataframe(
+                placeholder.dataframe(
                     df,
                     use_container_width=True,
-                    hide_index=True,
                     column_config={
-                        'Current': st.column_config.NumberColumn(format="%.6f"),
+                        'Ekwiwalent': st.column_config.NumberColumn(format="%.6f"),
                         'Baseline': st.column_config.NumberColumn(format="%.6f"),
-                        'Change %': st.column_config.NumberColumn(format="%+.2f%%"),
-                        'Status': st.column_config.TextColumn()
+                        'Zmiana %': st.column_config.NumberColumn(format="%+.2f%%"),
+                        'Wartość USDT': st.column_config.NumberColumn(format="%.2f"),
+                        'Sell Price +2%': st.column_config.NumberColumn(format="%.4f"),
+                        'Aktualny zysk USDT': st.column_config.NumberColumn(format="%+.2f%%")
                     }
                 )
             else:
-                df = pd.DataFrame(matrix_data)
-                df = df.sort_values('Gain %', ascending=False)
-                
-                st.dataframe(
-                    df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        'Current': st.column_config.NumberColumn(format="%.6f"),
-                        'Top': st.column_config.NumberColumn(format="%.6f"),
-                        'Gain %': st.column_config.NumberColumn(format="%+.2f%%"),
-                        'Status': st.column_config.TextColumn()
-                    }
-                )
-            
-            # Show best opportunities
-            if current_asset == 'USDT':
-                best_ops = [op for op in matrix_data if op['Change %'] >= self.swap_threshold]
-            else:
-                best_ops = [op for op in matrix_data if op['Gain %'] >= self.swap_threshold]
-                
-            if best_ops:
-                st.subheader("💎 Best Opportunities")
-                for op in best_ops[:3]:
-                    if current_asset == 'USDT':
-                        st.success(f"**{op['Target']}**: +{op['Change %']:.2f}% from baseline")
-                    else:
-                        st.success(f"**{op['Target']}**: +{op['Gain %']:.2f}% from top")
+                placeholder.error("❌ Brak danych do wyświetlenia")
 
-    def auto_refresh_data(self):
-        """Automatyczne odświeżanie danych - wywoływane przy każdym rerun"""
-        if st.session_state.tracking and st.session_state.api_initialized:
-            current_time = datetime.now()
+    def render_swap_interface(self):
+        """Interface do manualnych swapów"""
+        if not st.session_state.tracking:
+            return
             
-            # Sprawdzaj czy minęło 3 sekundy od ostatniego odświeżenia
-            if (current_time - st.session_state.last_refresh).seconds >= 3:
-                # Odśwież ceny
-                new_prices = self.get_current_prices()
+        st.header("🔄 Manualne operacje")
+        
+        if st.session_state.current_asset['type'] == 'USDT':
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                target_token = st.selectbox("Wybierz token do zakupu:", self.tokens_to_track)
+            
+            with col2:
+                if st.button("💰 Kup token", use_container_width=True, type="primary"):
+                    asset = st.session_state.current_asset
+                    prices = st.session_state.prices
+                    
+                    if target_token in prices:
+                        equivalent = self.calculate_equivalent('USDT', target_token, asset['amount'])
+                        st.session_state.current_asset = {
+                            'type': 'TOKEN',
+                            'amount': equivalent,
+                            'token': target_token,
+                            'purchase_price': prices[target_token]['ask']
+                        }
+                        self.initialize_baseline()
+                        st.success(f"✅ Zakupiono {equivalent:.6f} {target_token}")
+                        st.rerun()
+        
+        else:
+            current_token = st.session_state.current_asset['token']
+            available_tokens = [t for t in self.tokens_to_track if t != current_token]
+            
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                target_token = st.selectbox("Wybierz token docelowy:", available_tokens)
+            
+            with col2:
+                if st.button("🔄 Wymień token", use_container_width=True, type="primary"):
+                    asset = st.session_state.current_asset
+                    equivalent = self.calculate_equivalent(asset['token'], target_token, asset['amount'])
+                    
+                    st.session_state.current_asset = {
+                        'type': 'TOKEN',
+                        'amount': equivalent,
+                        'token': target_token,
+                        'purchase_price': st.session_state.prices[target_token]['ask']
+                    }
+                    self.initialize_baseline()
+                    st.success(f"✅ Wymieniono {asset['token']} → {target_token}")
+                    st.rerun()
+            
+            with col3:
+                if st.button("💵 Sprzedaj do USDT", use_container_width=True):
+                    asset = st.session_state.current_asset
+                    equivalent = self.calculate_equivalent(asset['token'], 'USDT', asset['amount'])
+                    
+                    st.session_state.current_asset = {
+                        'type': 'USDT',
+                        'amount': equivalent,
+                        'token': None,
+                        'purchase_price': None
+                    }
+                    self.initialize_baseline()
+                    st.success(f"✅ Sprzedano {asset['token']} za {equivalent:,.2f} USDT")
+                    st.rerun()
+
+    def auto_refresh(self):
+        """Automatyczne odświeżanie danych co 2 sekundy"""
+        if st.session_state.tracking:
+            current_time = datetime.now()
+            if 'last_refresh' not in st.session_state:
+                st.session_state.last_refresh = current_time
+            
+            if (current_time - st.session_state.last_refresh).total_seconds() >= 2:
+                new_prices = self.get_prices()
                 if new_prices:
                     st.session_state.prices = new_prices
-                
-                # Odśwież portfolio
-                if st.session_state.mexc_api:
-                    new_portfolio = st.session_state.mexc_api.get_account_balance()
-                    if new_portfolio:
-                        st.session_state.portfolio = new_portfolio
-                
-                # Aktualizuj top equivalents (tylko dla tokenów)
-                self.update_top_equivalents()
-                
-                # Sprawdź zmianę assetu
-                asset_changed = self.detect_asset_change()
-                
-                st.session_state.last_refresh = current_time
-                
-                # Jeśli były zmiany, wymuszamy rerun
-                return True
-                
+                    st.session_state.last_refresh = current_time
+                    return True
         return False
 
-    def render_control_panel(self):
-        """Panel kontrolny"""
-        st.sidebar.header("🎮 Control Panel")
+    def init_session_state(self):
+        """Inicjalizacja session state"""
+        if 'prices' not in st.session_state:
+            st.session_state.prices = self.get_prices()
         
-        if st.session_state.api_initialized:
-            status = "🟢 LIVE" if st.session_state.tracking else "🔴 STOPPED"
-            st.sidebar.metric("Status", status)
-            
-            if st.session_state.current_asset:
-                st.sidebar.metric("Current Asset", st.session_state.current_asset)
-            
-            if st.session_state.prices:
-                price_values = list(st.session_state.prices.values())
-                if price_values and 'last_update' in price_values[0]:
-                    last_update = price_values[0]['last_update']
-                    st.sidebar.caption(f"📊 Prices: {last_update.strftime('%H:%M:%S')}")
-            
-            if st.sidebar.button("🔄 Refresh Now", use_container_width=True):
-                if st.session_state.mexc_api:
-                    new_portfolio = st.session_state.mexc_api.get_account_balance()
-                    if new_portfolio:
-                        st.session_state.portfolio = new_portfolio
-                st.session_state.prices = self.get_current_prices()
-                st.rerun()
+        if 'current_asset' not in st.session_state:
+            st.session_state.current_asset = {
+                'type': 'USDT',
+                'amount': 1000.0,
+                'token': None,
+                'purchase_price': None
+            }
+        
+        if 'tracking' not in st.session_state:
+            st.session_state.tracking = False
+        
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = datetime.now()
 
     def run(self):
         """Główna pętla aplikacji"""
-        st.title("🔄 Crypto Swap Matrix - MEXC")
+        st.title("🔄 Single Slot Crypto Matrix")
         st.markdown("---")
         
         # Inicjalizacja
@@ -541,23 +466,28 @@ class SimpleSwapMatrix:
         col1, col2 = st.columns([3, 1])
         
         with col1:
-            if not st.session_state.api_initialized:
-                st.info("🔐 Configure your MEXC API keys in the sidebar to start")
-            
-            self.render_portfolio_overview()
+            self.render_asset_input()
             st.markdown("---")
-            self.render_swap_matrix()
+            
+            # Placeholder dla matrycy który będzie dynamicznie odświeżany
+            matrix_placeholder = st.empty()
+            
+            # Renderowanie matrycy
+            self.render_matrix(matrix_placeholder)
+            
+            st.markdown("---")
+            self.render_swap_interface()
         
         with col2:
-            self.setup_api_credentials()
-            if st.session_state.api_initialized:
-                self.render_control_panel()
+            self.render_control_panel()
         
-        # Auto refresh - wywołujemy przy każdym uruchomieniu
-        if self.auto_refresh_data():
-            st.rerun()
+        # Auto refresh z obsługą placeholder
+        if self.auto_refresh():
+            # Jeśli były nowe dane, przerysuj matrycę
+            matrix_placeholder.empty()
+            self.render_matrix(matrix_placeholder)
 
 # Uruchomienie aplikacji
 if __name__ == "__main__":
-    app = SimpleSwapMatrix()
+    app = SingleSlotSwapMatrix()
     app.run()
