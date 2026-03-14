@@ -234,11 +234,17 @@ col2.metric("Position BTC", st.session_state.position)
 col3.metric("Equity", round(st.session_state.equity,2))
 col4.metric("Unrealized PnL", round(st.session_state.pnl,2))
 
-if st.button("Start bot"):
+if "bot_running" not in st.session_state:
+    st.session_state.bot_running = False
 
+if st.button("Start bot") and not st.session_state.bot_running:
+    st.session_state.bot_running = True
     thread = threading.Thread(target=run_ws)
     thread.daemon = True
     thread.start()
+
+if st.button("Stop bot"):
+    st.session_state.bot_running = False
 
 # ============================================================
 # RANGE CHART
@@ -272,5 +278,7 @@ st.write(pd.DataFrame(st.session_state.trades))
 # AUTO REFRESH
 # ============================================================
 
-time.sleep(1)
-st.rerun()
+# lightweight auto refresh
+if st.session_state.bot_running:
+    time.sleep(1)
+    st.rerun()
