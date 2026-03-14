@@ -4,6 +4,8 @@ import json
 import threading
 import time
 import pandas as pd
+import threading
+from websocket import WebSocketApp
 
 # ============================================================
 # CONFIG
@@ -208,14 +210,29 @@ def on_message(ws, message):
 
     update_pnl(price)
 
+    print("tick", price)
+
 # ============================================================
 # WEBSOCKET
 # ============================================================
 
 def run_ws():
 
+    def on_message(ws, message):
+        data = json.loads(message)
+        price = float(data["p"])
+
+        st.session_state.price = price
+        st.session_state.best_bid = price - 0.5
+        st.session_state.best_ask = price + 0.5
+
+        update_range(price)
+        place_liquidity()
+        simulate_fills(price)
+        update_pnl(price)
+
     ws = WebSocketApp(
-        WS_URL,
+        "wss://stream.binance.com:9443/ws/btcusdt@trade",
         on_message=on_message
     )
 
@@ -237,11 +254,18 @@ col4.metric("Unrealized PnL", round(st.session_state.pnl,2))
 if "bot_running" not in st.session_state:
     st.session_state.bot_running = False
 
+if "ws_thread" not in st.session_state:
+    st.session_state.ws_thread = None
+
 if st.button("Start bot") and not st.session_state.bot_running:
+
     st.session_state.bot_running = True
+
     thread = threading.Thread(target=run_ws)
     thread.daemon = True
     thread.start()
+
+    st.session_state.ws_thread = thread
 
 if st.button("Stop bot"):
     st.session_state.bot_running = False
@@ -280,5 +304,10 @@ st.write(pd.DataFrame(st.session_state.trades))
 
 # lightweight auto refresh
 if st.session_state.bot_running:
-    time.sleep(1)
-    st.rerun()
+placeholder = st.empty()
+
+with placeholder.container():
+
+    st.metric("BTC Price", st.session_state.price)
+    st.metric("Position", st.session_state.position)
+    st.metric("Equity", st.session_state.equity)
