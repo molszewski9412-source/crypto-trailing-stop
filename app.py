@@ -1,547 +1,276 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-import requests
-import time
-from datetime import datetime, timedelta
+import websocket
 import json
-import os
-from dataclasses import dataclass
-from typing import Dict, List
+import threading
+import time
+import pandas as pd
 
-# ================== Konfiguracja strony ==================
-st.set_page_config(
-    page_title="Crypto Trailing Stop Matrix - 24/7",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# ============================================================
+# CONFIG
+# ============================================================
+RANGE_SIZE = 100
+LEVELS = 3
+LEVEL_SPACING = 1
+ORDER_SIZE = 0.001
+MAX_POSITION = 0.01
+MAKER_FEE = -0.00002
+TAKER_FEE = 0.0004
 
-# ================== Data Classes ==================
-@dataclass
-class TokenInfo:
-    symbol: str
-    bid_price: float = 0.0
-    ask_price: float = 0.0
-    last_update: datetime = None
+SYMBOL = "btcusdt"
+WS_URL = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 
-# ================== Main App ==================
-class CryptoTrailingStopApp:
-    def __init__(self):
-        self.fee_rate = 0.00025
-        self.trailing_stop_levels = {0.5: 0.2, 1.0: 0.5, 2.0: 1.0, 5.0: 2.0}
-        self.data_file = "trailing_stop_data.json"
-        self.tokens_to_track = [
-            'BTC', 'ETH', 'BNB', 'ADA', 'SOL', 'XRP', 'DOT', 'DOGE', 'AVAX', 'LTC',
-            'LINK', 'ATOM', 'XLM', 'BCH', 'ALGO', 'FIL', 'ETC', 'XTZ', 'AAVE', 'COMP',
-            'UNI', 'CRV', 'SUSHI', 'YFI', 'SNX', '1INCH', 'ZRX', 'TRX', 'VET', 'ONE',
-            'CELO', 'RSR', 'NKN', 'STORJ', 'DODO', 'KAVA', 'RUNE', 'SAND', 'MANA', 'ENJ',
-            'CHZ', 'ALICE', 'NEAR', 'ARB', 'OP', 'APT', 'SUI', 'SEI', 'INJ', 'RENDER'
-        ]
+# ============================================================
+# SESSION STATE INIT
+# ============================================================
 
-    # ================== API Helpers ==================
-    def test_connection(self):
-        try:
-            url = "https://api.mexc.com/api/v3/ping"
-            r = requests.get(url, timeout=10)
-            return r.status_code == 200, f"{'✅' if r.status_code==200 else '❌'} MEXC status {r.status_code}"
-        except Exception as e:
-            return False, f"❌ Connection error: {e}"
+def init_state():
 
-    def get_all_prices_bulk(self) -> Dict[str, TokenInfo]:
-        prices = {}
-        try:
-            r = requests.get("https://api.mexc.com/api/v3/ticker/bookTicker", timeout=15)
-            if r.status_code != 200:
-                st.error(f"❌ HTTP {r.status_code}")
-                return {}
-            data = r.json()
-            usdt_pairs = {item['symbol']: item for item in data if item['symbol'].endswith('USDT')}
-            for token in self.tokens_to_track:
-                sym = f"{token}USDT"
-                if sym in usdt_pairs:
-                    try:
-                        bid = float(usdt_pairs[sym]['bidPrice'])
-                        ask = float(usdt_pairs[sym]['askPrice'])
-                        if bid <= 0 or ask <= 0 or bid > ask:
-                            continue
-                        prices[token] = TokenInfo(symbol=token, bid_price=bid, ask_price=ask, last_update=datetime.now())
-                    except:
-                        continue
-            return prices
-        except Exception as e:
-            st.error(f"❌ {e}")
-            return {}
+    defaults = {
+        "price": None,
+        "best_bid": None,
+        "best_ask": None,
+        "range_open": None,
+        "range_high": None,
+        "range_low": None,
+        "range_dir": None,
+        "target": None,
+        "position": 0.0,
+        "orders": [],
+        "trades": [],
+        "equity": 10000.0,
+        "pnl": 0.0,
+        "range_history": []
+    }
 
-    def get_initial_prices(self):
-        return self.get_all_prices_bulk()
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    def update_real_prices(self):
-        if hasattr(st.session_state, 'last_price_update'):
-            if (datetime.now() - st.session_state.last_price_update).seconds < 3:
-                return
-        new_prices = self.get_all_prices_bulk()
-        if new_prices:
-            st.session_state.prices = new_prices
-            st.session_state.price_updates += 1
-            st.session_state.last_tracking_time = datetime.now()
-            st.session_state.last_price_update = datetime.now()
 
-    # ================== Portfolio ==================
-    def initialize_portfolio_from_usdt(self, usdt_amount: float, selected_tokens: List[str]):
-        if len(selected_tokens) != 5:
-            st.error("❌ Select exactly 5 tokens")
-            return False
-        if usdt_amount <= 0:
-            st.error("❌ USDT must be > 0")
-            return False
-        available_tokens = [t for t in selected_tokens if t in st.session_state.prices]
-        if len(available_tokens) < 5:
-            st.error(f"❌ Not enough price data: {len(available_tokens)}/5")
-            return False
-        st.session_state.portfolio = []
-        st.session_state.trades = []
-        usdt_per_slot = usdt_amount / 5
-        for token in available_tokens:
-            token_price = st.session_state.prices[token].ask_price
-            quantity = (usdt_per_slot / token_price) * (1 - self.fee_rate)
-            baseline = {}
-            top_equivalent = {}
-            current_gain = {}
-            max_gain = {}
-            for t in self.tokens_to_track:
-                if t in st.session_state.prices:
-                    eq = self.calculate_equivalent(token, t, quantity)
-                    baseline[t] = eq
-                    top_equivalent[t] = eq
-                    current_gain[t] = 0.0
-                    max_gain[t] = 0.0
-            slot = {
-                'token': token,
-                'quantity': quantity,
-                'baseline': baseline,
-                'top_equivalent': top_equivalent,
-                'current_gain': current_gain,
-                'max_gain': max_gain,
-                'usdt_value': quantity * st.session_state.prices[token].bid_price
-            }
-            st.session_state.portfolio.append(slot)
-        self.save_data()
-        st.success(f"✅ Portfolio initialized: {usdt_amount} USDT → 5 slots")
-        return True
+init_state()
 
-    # ================== Session State ==================
-    def init_session_state(self):
-        saved = self.load_data()
-        if 'portfolio' not in st.session_state:
-            st.session_state.portfolio = saved.get('portfolio', [])
-        if 'prices' not in st.session_state:
-            st.session_state.prices = self.get_initial_prices()
-        if 'trades' not in st.session_state:
-            st.session_state.trades = saved.get('trades', [])
-        if 'tracking' not in st.session_state:
-            st.session_state.tracking = False
-        if 'price_updates' not in st.session_state:
-            st.session_state.price_updates = 0
-        if 'last_tracking_time' not in st.session_state:
-            st.session_state.last_tracking_time = datetime.now()
-        if 'last_price_update' not in st.session_state:
-            st.session_state.last_price_update = datetime.now()
-        if 'app_start_time' not in st.session_state:
-            st.session_state.app_start_time = datetime.now()
+# ============================================================
+# RANGE ENGINE
+# ============================================================
 
-    # ================== Load/Save ==================
-    def load_data(self):
-        try:
-            if os.path.exists(self.data_file):
-                with open(self.data_file, 'r') as f:
-                    data = json.load(f)
-                trades = []
-                for t in data.get('trades', []):
-                    trades.append({
-                        'timestamp': datetime.fromisoformat(t['timestamp']),
-                        'from_token': t['from_token'],
-                        'to_token': t['to_token'],
-                        'from_quantity': t['from_quantity'],
-                        'to_quantity': t['to_quantity'],
-                        'slot': t['slot'],
-                        'max_gain': t.get('max_gain', 0.0),
-                        'reason': t.get('reason', '')
-                    })
-                return {'portfolio': data.get('portfolio', []), 'trades': trades}
-        except Exception as e:
-            st.error(f"❌ {e}")
-        return {'portfolio': [], 'trades': []}
+def update_range(price):
 
-    def save_data(self):
-        try:
-            data = {
-                'portfolio': st.session_state.portfolio,
-                'trades': [{
-                    'timestamp': t['timestamp'].isoformat(),
-                    'from_token': t['from_token'],
-                    'to_token': t['to_token'],
-                    'from_quantity': t['from_quantity'],
-                    'to_quantity': t['to_quantity'],
-                    'slot': t['slot'],
-                    'max_gain': t.get('max_gain', 0.0),
-                    'reason': t.get('reason', '')
-                } for t in st.session_state.trades]
-            }
-            with open(self.data_file, 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            st.error(f"❌ {e}")
+    if st.session_state.range_open is None:
+        st.session_state.range_open = price
+        st.session_state.range_high = price
+        st.session_state.range_low = price
+        return
 
-    # ================== Equivalents ==================
-    def calculate_equivalent(self, from_token: str, to_token: str, quantity: float) -> float:
-        if from_token == to_token:
-            return quantity * (1 - self.fee_rate)
-        prices = st.session_state.prices
-        if from_token not in prices or to_token not in prices:
-            return 0.0
-        try:
-            usdt_value = quantity * prices[from_token].bid_price * (1 - self.fee_rate)
-            equivalent = (usdt_value / prices[to_token].ask_price) * (1 - self.fee_rate)
-            return equivalent
-        except:
-            return 0.0
+    st.session_state.range_high = max(st.session_state.range_high, price)
+    st.session_state.range_low = min(st.session_state.range_low, price)
 
-    # ================== Trailing Stop Logic ==================
-    def get_trailing_stop_level(self, max_gain: float) -> float:
-        current_ts = 0.0
-        for gain_threshold, ts in sorted(self.trailing_stop_levels.items()):
-            if max_gain >= gain_threshold:
-                current_ts = ts
-        return current_ts
+    if st.session_state.range_high - st.session_state.range_low >= RANGE_SIZE:
 
-    def check_and_execute_trades(self):
-        if not st.session_state.tracking or not st.session_state.portfolio:
-            return
-        slot_candidates = {}
-        for idx, slot in enumerate(st.session_state.portfolio):
-            swap_candidates = []
-            current_tokens = [s['token'] for s in st.session_state.portfolio]
-            from_token = slot['token']
-            qty = slot['quantity']
-            if qty <= 0 or from_token not in st.session_state.prices:
-                continue
-            for target_token in self.tokens_to_track:
-                if target_token == from_token or target_token in current_tokens:
-                    continue
-                current_eq = self.calculate_equivalent(from_token, target_token, qty)
-                if current_eq <= 0:
-                    continue
-                baseline_eq = slot['baseline'].get(target_token, current_eq)
-                top_eq = slot['top_equivalent'].get(target_token, current_eq)
-                if top_eq <= 0:
-                    top_eq = current_eq
-                    slot['top_equivalent'][target_token] = current_eq
-                gain_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0
-                slot['current_gain'][target_token] = gain_from_baseline
-                gain_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0
-                prev_max = slot['max_gain'].get(target_token, 0.0)
-                if gain_from_top > prev_max:
-                    slot['max_gain'][target_token] = gain_from_top
-                current_max_gain = slot['max_gain'].get(target_token, 0.0)
-                if current_max_gain >= 0.5 or gain_from_top >= 0.5:
-                    ts = self.get_trailing_stop_level(current_max_gain)
-                    swap_threshold = current_max_gain - ts
-                    if gain_from_top <= swap_threshold and current_eq >= top_eq:
-                        swap_candidates.append({
-                            'target_token': target_token,
-                            'current_eq': current_eq,
-                            'max_gain': current_max_gain
-                        })
-            if swap_candidates:
-                swap_candidates.sort(key=lambda x: x['max_gain'], reverse=True)
-                slot_candidates[idx] = swap_candidates[0]
-        executed_targets = set()
-        for idx in sorted(slot_candidates.keys()):
-            candidate = slot_candidates[idx]
-            target = candidate['target_token']
-            if target in executed_targets:
-                continue
-            current_tokens = [s['token'] for s in st.session_state.portfolio]
-            if target in current_tokens:
-                continue
-            slot = st.session_state.portfolio[idx]
-            self.execute_trade(idx, slot, target, candidate['current_eq'], candidate['max_gain'])
-            executed_targets.add(target)
+        new_dir = "UP" if price > st.session_state.range_open else "DOWN"
 
-    def execute_trade(self, slot_idx: int, slot: dict, target_token: str, equivalent: float, max_gain: float):
-        """
-        Wykonuje swap pełnego slotu.
-        1. Oblicza dokładną ilość target_token uzyskaną w swapie.
-        2. Aktualizuje top_equivalent dla swapowanego tokenu dokładnie jako uzyskana ilość.
-        3. Dla pozostałych tokenów przelicza top_equivalent względem nowego tokenu i jego ilości.
-        4. Resetuje current_gain i max_gain tylko dla tokenów innych niż swapowany.
-        5. Zapisuje trade w historii.
-        """
+        st.session_state.range_history.append({
+            "open": st.session_state.range_open,
+            "high": st.session_state.range_high,
+            "low": st.session_state.range_low,
+            "close": price,
+            "dir": new_dir
+        })
 
-        from_token = slot['token']
-        from_qty = slot['quantity']
+        if st.session_state.range_dir and new_dir != st.session_state.range_dir:
+            st.session_state.target = "LONG" if new_dir == "UP" else "SHORT"
 
-        # Dokładna ilość uzyskana w swapie (uwzględnia fee)
-        to_qty = self.calculate_equivalent(from_token, target_token, from_qty)
-        if to_qty <= 0:
-            st.warning("⚠️ Swap aborted: computed to_qty <= 0")
-            return
+        st.session_state.range_dir = new_dir
 
-        # Zapis trade przed zmianą stanu slotu
-        trade = {
-            'timestamp': datetime.now(),
-            'from_token': from_token,
-            'to_token': target_token,
-            'from_quantity': from_qty,
-            'to_quantity': to_qty,
-            'slot': slot_idx,
-            'max_gain': max_gain,
-            'reason': f'Trailing Stop triggered (max_gain={max_gain:.2f}%)'
-        }
+        st.session_state.range_open = price
+        st.session_state.range_high = price
+        st.session_state.range_low = price
 
-        # Wykonanie swapu: zamiana tokenu i ilości w slocie
-        slot['token'] = target_token
-        slot['quantity'] = to_qty
+# ============================================================
+# ORDER MANAGEMENT
+# ============================================================
 
-        # -------------------------
-        # TOP EQUIVALENT LOGIKA
-        # -------------------------
+def cancel_all():
+    st.session_state.orders = []
 
-        for token in self.tokens_to_track:
-            if token == target_token:
-                # Swapowany token → top_equivalent = dokładna ilość uzyskana w swapie
-                slot['top_equivalent'][token] = to_qty
-            else:
-                # Pozostałe tokeny → przeliczamy ekwiwalent względem nowego tokenu i jego ilości
-                new_equiv = self.calculate_equivalent(target_token, token, to_qty)
-                slot['top_equivalent'][token] = new_equiv if new_equiv is not None else 0.0
-                # Resetujemy gains tylko dla innych tokenów
-                slot['current_gain'][token] = 0.0
-                slot['max_gain'][token] = 0.0
 
-        # Dodanie trade do historii
-        st.session_state.trades.append(trade)
-        self.save_data()
+def place_liquidity():
 
-        st.toast(f"🔁 SWAP: {from_token} → {target_token} (Slot {slot_idx + 1})", icon="✅")
-        st.success(f"💰 Executed SWAP: {from_token} → {target_token} | max_gain observed: {max_gain:.2f}%")
+    bid = st.session_state.best_bid
+    ask = st.session_state.best_ask
 
-    # ================== UI ==================
-    def render_sidebar(self):
-        with st.sidebar:
-            st.title("⚙️ Config 24/7")
-            if hasattr(st.session_state, 'app_start_time'):
-                uptime = datetime.now() - st.session_state.app_start_time
-                st.metric("Uptime", f"{uptime.seconds//3600}h {(uptime.seconds%3600)//60}m")
-            st.metric("Slots", f"{len(st.session_state.portfolio)}/5")
-            st.metric("Trades", len(st.session_state.trades))
-            st.metric("Price updates", st.session_state.price_updates)
-            st.metric("Status", "🟢 RUNNING" if st.session_state.tracking else "🟡 PAUSED")
-            st.subheader("🔍 Diagnostics")
-            if st.button("🧪 Test MEXC connection"):
-                ok, msg = self.test_connection()
-                st.success(msg) if ok else st.error(msg)
-            if not st.session_state.portfolio:
-                st.subheader("💰 Init Portfolio")
-                usdt_amount = st.number_input("USDT amount:", min_value=10.0, value=1000.0, step=100.0)
-                available_tokens = list(st.session_state.prices.keys()) if hasattr(st.session_state, 'prices') else []
-                available_tokens.sort()
-                selected_tokens = st.multiselect("Select 5 tokens:", available_tokens,
-                                                 default=available_tokens[:5], max_selections=5)
-                if st.button("🏁 Initialize Portfolio", use_container_width=True):
-                    if len(selected_tokens)==5:
-                        self.initialize_portfolio_from_usdt(usdt_amount, selected_tokens)
-                        st.rerun()
-                    else:
-                        st.error("❌ Select exactly 5 tokens")
-            st.subheader("🎮 Controls")
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("▶ Start", use_container_width=True) and not st.session_state.tracking:
-                    if st.session_state.prices:
-                        st.session_state.tracking = True
-                        st.session_state.app_start_time = datetime.now()
-                        st.rerun()
-                    else:
-                        st.error("❌ No prices")
-            with col2:
-                if st.button("⏹ Stop", use_container_width=True) and st.session_state.tracking:
-                    st.session_state.tracking = False
-                    st.rerun()
-            st.subheader("💾 Data")
-            if os.path.exists(self.data_file):
-                file_time = os.path.getmtime(self.data_file)
-                file_size = os.path.getsize(self.data_file)/1024
-                st.caption(f"📁 Last save: {datetime.fromtimestamp(file_time).strftime('%H:%M:%S')}")
-                st.caption(f"📊 Data size: {file_size:.1f} KB")
-                if st.button("🗑️ Clear all data", use_container_width=True):
-                    self.clear_all_data()
-            st.subheader("🎯 Trailing Stop Levels")
-            for gain, stop in sorted(self.trailing_stop_levels.items()):
-                st.text(f"💰 {gain}% gain → trailing stop {stop}% below max")
+    if bid is None or ask is None:
+        return
 
-    def render_portfolio_overview(self):
-        st.header("📊 Portfolio Overview")
-        if not st.session_state.portfolio:
-            st.info("👈 Initialize portfolio from sidebar")
-            return
-        cols = st.columns(len(st.session_state.portfolio))
-        for idx, (col, slot) in enumerate(zip(cols, st.session_state.portfolio)):
-            with col:
-                if slot['token'] in st.session_state.prices:
-                    val = slot['quantity']*st.session_state.prices[slot['token']].bid_price
-                    st.metric(f"Slot {idx+1} - {slot['token']}", f"{slot['quantity']:.6f}", f"{val:.2f} USDT")
-                else:
-                    st.metric(f"Slot {idx+1} - {slot['token']}", f"{slot['quantity']:.6f}", "N/A")
+    cancel_all()
 
-    def render_trailing_matrix(self):
-        st.header("🎯 Trailing Stop Matrix")
-        for idx, slot in enumerate(st.session_state.portfolio):
-            self.render_slot_with_history(idx, slot)
+    if st.session_state.target == "LONG":
 
-    def render_slot_with_history(self, slot_idx: int, slot: dict):
-        # Wyświetlamy nagłówek dla slotu
-        st.subheader(f"🔷 Slot {slot_idx + 1}: {slot['token']} ({slot['quantity']:.6f})")
-        
-        # Wyświetlamy macierz z aktualnymi danymi
-        self.render_slot_matrix(slot_idx, slot)
-        
-        # Wyświetlamy historię swapów dla slotu
-        self.render_slot_trade_history(slot_idx)
+        for i in range(LEVELS):
+            price = bid - (i * LEVEL_SPACING)
 
-    def render_slot_matrix(self, slot_idx: int, slot: dict):
-        """
-        Render matrix for a single slot.
-        Wyświetla pełną macierz tokenów i ich aktualne oraz top ekwiwalenty.
-
-        Zmiany:
-        - Użyto st.table() zamiast st.dataframe, aby uniknąć przewijania.
-        - Pokazuje absolutne wartości, delta od początkowego i od top.
-        - Status wskazuje token własny, najlepszy kandydat i kolory w zależności od zmiany.
-        """
-        matrix_data = []
-        best_pair_gain = -999.0
-        best_pair_token = None
-
-        # Szukamy tokenu z najwyższym max_gain
-        for token in self.tokens_to_track:
-            current_max_gain = slot.get('max_gain', {}).get(token, 0.0)
-            if current_max_gain > best_pair_gain:
-                best_pair_gain = current_max_gain
-                best_pair_token = token
-
-        # Budujemy wiersze tabeli
-        for token in self.tokens_to_track:
-            current_eq = self.calculate_equivalent(slot['token'], token, slot['quantity'])
-            try:
-                current_eq = float(current_eq)
-            except:
-                current_eq = 0.0
-            baseline_eq = slot.get('baseline', {}).get(token, current_eq)
-            try:
-                baseline_eq = float(baseline_eq)
-            except:
-                baseline_eq = 0.0
-            top_eq = slot.get('top_equivalent', {}).get(token, current_eq)
-            try:
-                top_eq = float(top_eq)
-            except:
-                top_eq = 0.0
-
-            current_gain = slot.get('current_gain', {}).get(token, 0.0)
-            max_gain = slot.get('max_gain', {}).get(token, 0.0)
-
-            change_from_baseline = ((current_eq - baseline_eq) / baseline_eq * 100) if baseline_eq > 0 else 0.0
-            change_from_top = ((current_eq - top_eq) / top_eq * 100) if top_eq > 0 else 0.0
-
-            # Status wizualny: własny token, najlepszy kandydat lub kolory zmiany
-            status = "🟢" if change_from_top >= -1 else "🟡" if change_from_top >= -3 else "🔴"
-            if token == slot['token']:
-                status = "🔵"
-            elif token == best_pair_token and best_pair_gain >= 0.5:
-                status = "⭐"
-
-            matrix_data.append({
-                'Token': token,
-                'Aktualny': f"{current_eq:.6f}",
-                'Początkowy': f"{baseline_eq:.6f}",
-                'Δ Od początku': f"{change_from_baseline:+.2f}%",
-                'Top': f"{top_eq:.6f}",
-                'Δ Od top': f"{change_from_top:+.2f}%",
-                'Current Gain': f"{current_gain:+.2f}%",
-                'Max Wzrost': f"{max_gain:+.2f}%",
-                'Status': status
+            st.session_state.orders.append({
+                "side": "BUY",
+                "price": price,
+                "size": ORDER_SIZE
             })
 
-        df = pd.DataFrame(matrix_data)
+    if st.session_state.target == "SHORT":
 
-        # Wyświetlamy pełną macierz bez przewijania
-        st.table(df)
+        for i in range(LEVELS):
+            price = ask + (i * LEVEL_SPACING)
 
-    def render_slot_trade_history(self, idx):
-        trades = [t for t in st.session_state.trades if t['slot']==idx]
-        if trades:
-            st.subheader(f"📋 History Slot {idx+1}")
-            data = []
-            for t in trades[-10:]:
-                data.append({
-                    'Data': t['timestamp'].strftime('%H:%M:%S'),
-                    'Z': t['from_token'],
-                    'Na': t['to_token'],
-                    'Ilość': f"{t['to_quantity']:.6f}",
-                    'Max Wzrost': f"{t['max_gain']:.2f}%",
-                    'Powód': t['reason']
+            st.session_state.orders.append({
+                "side": "SELL",
+                "price": price,
+                "size": ORDER_SIZE
+            })
+
+# ============================================================
+# PNL
+# ============================================================
+
+def update_pnl(price):
+
+    pos = st.session_state.position
+
+    unrealized = pos * price
+
+    st.session_state.pnl = unrealized
+
+# ============================================================
+# FILL SIMULATION
+# ============================================================
+
+def simulate_fills(price):
+
+    filled = []
+
+    for order in st.session_state.orders:
+
+        if order["side"] == "BUY" and price <= order["price"]:
+
+            if st.session_state.position < MAX_POSITION:
+
+                fee = order["price"] * order["size"] * MAKER_FEE
+
+                st.session_state.position += order["size"]
+                st.session_state.equity += fee
+
+                st.session_state.trades.append({
+                    "side": "BUY",
+                    "price": order["price"],
+                    "size": order["size"]
                 })
-            st.dataframe(pd.DataFrame(data), use_container_width=True)
-        else:
-            st.caption("📝 No trades for this slot yet")
 
-    def keep_app_alive(self):
-        if not hasattr(st.session_state, 'last_active_ping'):
-            st.session_state.last_active_ping = datetime.now()
-        if (datetime.now() - st.session_state.last_active_ping).seconds>120:
-            st.session_state.last_active_ping = datetime.now()
+                filled.append(order)
 
-    def clear_all_data(self):
-        st.session_state.portfolio = []
-        st.session_state.trades = []
-        st.session_state.tracking = False
-        if os.path.exists(self.data_file):
-            os.remove(self.data_file)
-        st.success("🗑️ All data cleared")
-        st.rerun()
+        if order["side"] == "SELL" and price >= order["price"]:
 
-    def run(self):
-        try:
-            self.init_session_state()
-            st.title("🚀 Crypto Trailing Stop Matrix - 24/7")
-            st.markdown("---")
-            self.keep_app_alive()
-            self.render_sidebar()
-            if st.session_state.prices:
-                self.render_portfolio_overview()
-                if st.session_state.portfolio:
-                    self.render_trailing_matrix()
-                    if st.session_state.tracking:
-                        st.success(f"🟢 TRACKING ACTIVE | Last update: {datetime.now().strftime('%H:%M:%S')}")
-                        self.update_real_prices()
-                        self.check_and_execute_trades()
-                        time.sleep(3)
-                        st.rerun()
-            else:
-                st.error("🚫 No price data")
-                if st.button("🔄 Refresh prices") or st.session_state.tracking:
-                    st.session_state.prices = self.get_initial_prices()
-                    time.sleep(2)
-                    st.rerun()
-        except Exception as e:
-            st.error(f"🔴 Critical error: {e}")
-            st.info("🔄 Auto-restart in 10 seconds...")
-            time.sleep(10)
-            st.rerun()
+            if st.session_state.position > -MAX_POSITION:
 
-# ================== Run App ==================
-if __name__=="__main__":
-    app = CryptoTrailingStopApp()
-    app.run()
+                fee = order["price"] * order["size"] * MAKER_FEE
+
+                st.session_state.position -= order["size"]
+                st.session_state.equity += fee
+
+                st.session_state.trades.append({
+                    "side": "SELL",
+                    "price": order["price"],
+                    "size": order["size"]
+                })
+
+                filled.append(order)
+
+    for f in filled:
+        st.session_state.orders.remove(f)
+
+# ============================================================
+# PRICE STREAM
+# ============================================================
+
+def on_message(ws, message):
+
+    data = json.loads(message)
+
+    price = float(data['p'])
+
+    st.session_state.price = price
+
+    # simple synthetic spread
+    st.session_state.best_bid = price - 0.5
+    st.session_state.best_ask = price + 0.5
+
+    update_range(price)
+
+    place_liquidity()
+
+    simulate_fills(price)
+
+    update_pnl(price)
+
+# ============================================================
+# WEBSOCKET
+# ============================================================
+
+def run_ws():
+
+    ws = websocket.WebSocketApp(
+        WS_URL,
+        on_message=on_message
+    )
+
+    ws.run_forever()
+
+# ============================================================
+# UI
+# ============================================================
+
+st.title("BTC Range Maker Paper Trading Bot PRO")
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric("Price", st.session_state.price)
+col2.metric("Position BTC", st.session_state.position)
+col3.metric("Equity", round(st.session_state.equity,2))
+col4.metric("Unrealized PnL", round(st.session_state.pnl,2))
+
+if st.button("Start bot"):
+
+    thread = threading.Thread(target=run_ws)
+    thread.daemon = True
+    thread.start()
+
+# ============================================================
+# RANGE CHART
+# ============================================================
+
+st.subheader("Range Bars")
+
+if len(st.session_state.range_history) > 0:
+
+    df = pd.DataFrame(st.session_state.range_history)
+
+    st.line_chart(df['close'])
+
+# ============================================================
+# ORDERS
+# ============================================================
+
+st.subheader("Active Orders")
+
+st.write(pd.DataFrame(st.session_state.orders))
+
+# ============================================================
+# TRADES
+# ============================================================
+
+st.subheader("Trades")
+
+st.write(pd.DataFrame(st.session_state.trades))
+
+# ============================================================
+# AUTO REFRESH
+# ============================================================
+
+time.sleep(1)
+st.experimental_rerun()
