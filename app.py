@@ -1,4 +1,4 @@
-# streamlit_range_maker_stable_pro.py
+# streamlit_range_maker_stable_pro_v2.py
 import streamlit as st
 import pandas as pd
 import requests
@@ -14,7 +14,7 @@ LEVEL_SPACING = 1
 ORDER_SIZE = 0.001
 MAX_POSITION = 0.01
 MAKER_FEE = -0.00002
-TICK_INTERVAL = 1  # per tick (seconds)
+TICK_INTERVAL = 2  # seconds
 SYMBOL = "BTCUSDT"
 
 # =======================
@@ -40,11 +40,11 @@ if st.session_state.target is None:
 def get_price():
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
     try:
-        r = requests.get(url, timeout=1)
+        r = requests.get(url, timeout=3)
         data = r.json()
         return float(data["price"])
     except:
-        return None  # zwracamy None jeśli błąd
+        return None  # zwróć None jeśli błąd
 
 # =======================
 # RANGE ENGINE
@@ -70,7 +70,7 @@ def update_range(price):
             "dir": new_dir
         })
 
-        # flip LONG/SHORT
+        # flip LONG/SHORT po zmianie kierunku
         if st.session_state.range_dir and new_dir != st.session_state.range_dir:
             st.session_state.target = "LONG" if new_dir == "UP" else "SHORT"
 
@@ -115,8 +115,7 @@ def place_liquidity():
 def simulate_fills(price):
     filled = []
     for order in st.session_state.orders:
-        # fill probability simulation
-        if random.random() > 0.5:  # ~50% chance per tick
+        if random.random() > 0.5:  # ~50% chance fill
             if order["side"] == "BUY" and st.session_state.position < MAX_POSITION:
                 fee = order["price"] * order["size"] * MAKER_FEE
                 st.session_state.position += order["size"]
@@ -149,7 +148,7 @@ def update_pnl(price):
 # =======================
 # STREAMLIT UI
 # =======================
-st.title("BTC Range Maker Bot - Stable PRO per tick")
+st.title("BTC Range Maker Bot - Stable PRO v2")
 
 start_col, stop_col = st.columns(2)
 if start_col.button("Start bot"):
@@ -160,9 +159,9 @@ if stop_col.button("Stop bot"):
 placeholder = st.empty()
 
 while st.session_state.bot_running:
-    price = get_price()
+    price = get_price() or st.session_state.price  # fallback na ostatnią cenę
     if price is None:
-        st.warning("Price not available, retrying...")
+        # jeśli nie mamy żadnej ceny jeszcze
         time.sleep(TICK_INTERVAL)
         continue
 
@@ -175,9 +174,6 @@ while st.session_state.bot_running:
     simulate_fills(price)
     update_pnl(price)
 
-    # =======================
-    # UPDATE UI
-    # =======================
     with placeholder.container():
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("BTC Price", st.session_state.price)
