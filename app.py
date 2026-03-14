@@ -177,6 +177,18 @@ if stop_col.button("Stop bot"):
 
 while st.session_state.bot_running:
     price = get_price()
+if price is None:
+    st.warning("Price not available, retrying...")
+else:
+    st.session_state.price = price
+    st.session_state.best_bid = price - 0.5
+    st.session_state.best_ask = price + 0.5
+
+    # dalsze funkcje bota
+    update_range(price)
+    place_liquidity()
+    simulate_fills(price)
+    update_pnl(price)
     st.session_state.price = price
     st.session_state.best_bid = price - 0.5
     st.session_state.best_ask = price + 0.5
