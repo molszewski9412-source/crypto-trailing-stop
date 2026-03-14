@@ -1,5 +1,5 @@
 import streamlit as st
-import websocket
+from websocket import WebSocketApp
 import json
 import threading
 import time
@@ -214,7 +214,7 @@ def on_message(ws, message):
 
 def run_ws():
 
-    ws = websocket.WebSocketApp(
+    ws = WebSocketApp(
         WS_URL,
         on_message=on_message
     )
