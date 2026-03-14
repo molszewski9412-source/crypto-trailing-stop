@@ -273,4 +273,4 @@ st.write(pd.DataFrame(st.session_state.trades))
 # ============================================================
 
 time.sleep(1)
-st.experimental_rerun()
+st.rerun()
