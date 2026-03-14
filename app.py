@@ -303,7 +303,7 @@ st.write(pd.DataFrame(st.session_state.trades))
 # ============================================================
 
 # lightweight auto refresh
-if st.session_state.bot_running:
+
 placeholder = st.empty()
 
 with placeholder.container():
