@@ -1,4 +1,4 @@
-# streamlit_range_maker_pro.py
+# streamlit_range_maker_stable_pro.py
 import streamlit as st
 import pandas as pd
 import requests
@@ -14,42 +14,25 @@ LEVEL_SPACING = 1
 ORDER_SIZE = 0.001
 MAX_POSITION = 0.01
 MAKER_FEE = -0.00002
-TICK_INTERVAL = 1  # seconds
+TICK_INTERVAL = 1  # per tick (seconds)
 SYMBOL = "BTCUSDT"
 
 # =======================
 # SESSION STATE INIT
 # =======================
-if "price" not in st.session_state:
-    st.session_state.price = None
-if "best_bid" not in st.session_state:
-    st.session_state.best_bid = None
-if "best_ask" not in st.session_state:
-    st.session_state.best_ask = None
-if "range_open" not in st.session_state:
-    st.session_state.range_open = None
-if "range_high" not in st.session_state:
-    st.session_state.range_high = None
-if "range_low" not in st.session_state:
-    st.session_state.range_low = None
-if "range_dir" not in st.session_state:
-    st.session_state.range_dir = None
-if "target" not in st.session_state:
-    st.session_state.target = None
-if "position" not in st.session_state:
-    st.session_state.position = 0.0
-if "orders" not in st.session_state:
-    st.session_state.orders = []
-if "trades" not in st.session_state:
-    st.session_state.trades = []
-if "equity" not in st.session_state:
-    st.session_state.equity = 10000.0
-if "pnl" not in st.session_state:
-    st.session_state.pnl = 0.0
-if "range_history" not in st.session_state:
-    st.session_state.range_history = []
-if "bot_running" not in st.session_state:
-    st.session_state.bot_running = False
+state_vars = ["price","best_bid","best_ask","range_open","range_high","range_low",
+              "range_dir","target","position","orders","trades","equity","pnl",
+              "range_history","bot_running"]
+for var in state_vars:
+    if var not in st.session_state:
+        if var in ["orders","trades","range_history"]:
+            st.session_state[var] = []
+        elif var in ["position","equity","pnl"]:
+            st.session_state[var] = 0.0 if var!="equity" else 10000.0
+        else:
+            st.session_state[var] = None
+if st.session_state.target is None:
+    st.session_state.target = "LONG"
 
 # =======================
 # FETCH PRICE
@@ -61,7 +44,7 @@ def get_price():
         data = r.json()
         return float(data["price"])
     except:
-        return st.session_state.price  # keep last price if fail
+        return None  # zwracamy None jeśli błąd
 
 # =======================
 # RANGE ENGINE
@@ -133,8 +116,7 @@ def simulate_fills(price):
     filled = []
     for order in st.session_state.orders:
         # fill probability simulation
-        fill_prob = random.uniform(0,1)
-        if fill_prob > 0.5:  # ~50% chance fill per tick
+        if random.random() > 0.5:  # ~50% chance per tick
             if order["side"] == "BUY" and st.session_state.position < MAX_POSITION:
                 fee = order["price"] * order["size"] * MAKER_FEE
                 st.session_state.position += order["size"]
@@ -165,9 +147,9 @@ def update_pnl(price):
     st.session_state.pnl = st.session_state.position * price
 
 # =======================
-# BOT TICK LOOP
+# STREAMLIT UI
 # =======================
-placeholder = st.empty()
+st.title("BTC Range Maker Bot - Stable PRO per tick")
 
 start_col, stop_col = st.columns(2)
 if start_col.button("Start bot"):
@@ -175,20 +157,15 @@ if start_col.button("Start bot"):
 if stop_col.button("Stop bot"):
     st.session_state.bot_running = False
 
+placeholder = st.empty()
+
 while st.session_state.bot_running:
     price = get_price()
-if price is None:
-    st.warning("Price not available, retrying...")
-else:
-    st.session_state.price = price
-    st.session_state.best_bid = price - 0.5
-    st.session_state.best_ask = price + 0.5
+    if price is None:
+        st.warning("Price not available, retrying...")
+        time.sleep(TICK_INTERVAL)
+        continue
 
-    # dalsze funkcje bota
-    update_range(price)
-    place_liquidity()
-    simulate_fills(price)
-    update_pnl(price)
     st.session_state.price = price
     st.session_state.best_bid = price - 0.5
     st.session_state.best_ask = price + 0.5
@@ -198,8 +175,10 @@ else:
     simulate_fills(price)
     update_pnl(price)
 
+    # =======================
+    # UPDATE UI
+    # =======================
     with placeholder.container():
-        st.title("BTC Range Maker Bot - LIVE per tick")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("BTC Price", st.session_state.price)
         col2.metric("Position BTC", round(st.session_state.position,6))
