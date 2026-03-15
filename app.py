@@ -1,14 +1,13 @@
-# range_bars_ha_paper.py
+# file: range_bars_ha_paper_ws.py
 import streamlit as st
 import pandas as pd
-import requests
-import time
-from streamlit_autorefresh import st_autorefresh
+import asyncio
+from mexc import MEXC
 
-st.set_page_config(page_title="Range Bars HA Bot", layout="wide")
+st.set_page_config(page_title="Range Bars HA Bot WS", layout="wide")
 st.title("Range Bars Bot - BTC/USDT 1m Heikin Ashi (Paper Trading)")
 
-# ===== INPUTS =====
+# ===== INPUTY =====
 range_size = st.number_input("Range Size ($)", min_value=1, value=100)
 refresh_sec = st.number_input("Refresh every (seconds)", min_value=1, value=5)
 initial_equity = 1000.0
@@ -28,36 +27,7 @@ if "last_low" not in st.session_state:
 if "last_direction" not in st.session_state:
     st.session_state.last_direction = 0
 
-# ===== AUTORELOAD =====
-st_autorefresh(interval=refresh_sec * 1000, key="datarefresh")
-
-# ===== FUNCTIONS =====
-def get_btc_candles(limit=100, retries=3):
-    url = f"https://www.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit={limit}"
-    for attempt in range(retries):
-        try:
-            resp = requests.get(url, timeout=5)
-            if resp.status_code != 200:
-                st.warning(f"API returned status {resp.status_code}, retrying...")
-                time.sleep(1)
-                continue
-            data = resp.json()
-            df = pd.DataFrame(data, columns=[
-                "open_time","open","high","low","close","volume",
-                "close_time","quote_asset_volume","number_of_trades",
-                "taker_buy_base","taker_buy_quote","ignore"
-            ])
-            df = df.astype({"open": float, "high": float, "low": float, "close": float})
-            return df
-        except requests.exceptions.RequestException as e:
-            st.warning(f"Request error: {e}, retrying...")
-            time.sleep(1)
-        except ValueError as e:
-            st.warning(f"JSON decode error: {e}, retrying...")
-            time.sleep(1)
-    st.error("Failed to fetch data from MEXC API after multiple retries.")
-    return pd.DataFrame()
-
+# ===== HEIKIN ASHI =====
 def heikin_ashi(df):
     ha = pd.DataFrame(index=df.index, columns=["open","high","low","close"])
     ha["close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -73,9 +43,10 @@ def heikin_ashi(df):
         ha["low"].iloc[i] = min(df["low"].iloc[i], ha["open"].iloc[i], ha["close"].iloc[i])
     return ha
 
+# ===== RANGE BARS =====
 def compute_signals(df, range_size, last_high, last_low, last_direction):
     signals = []
-    for i in range(1, len(df)):
+    for i in range(len(df)):
         current_high = df["high"].iloc[i]
         current_low = df["low"].iloc[i]
         current_direction = last_direction
@@ -99,37 +70,47 @@ def compute_signals(df, range_size, last_high, last_low, last_direction):
 
     return signals, last_high, last_low, last_direction
 
-# ===== MAIN =====
-df_raw = get_btc_candles(limit=100)
-if df_raw.empty:
-    st.stop()
-df = heikin_ashi(df_raw)
+# ===== ASYNC STREAMING =====
+placeholder = st.empty()
 
-# initialize last_high/low
-if st.session_state.last_high is None:
-    st.session_state.last_high = df["high"].iloc[0]
-if st.session_state.last_low is None:
-    st.session_state.last_low = df["low"].iloc[0]
+async def main():
+    async with MEXC.new() as client:
+        async for candle in client.spot.streams.candles('BTCUSDT', interval='Min1'):
+            # candle = {'open', 'high', 'low', 'close', 'volume', 'timestamp'}
+            df = pd.DataFrame([candle])
+            df = df[['open','high','low','close']].astype(float)
+            df = heikin_ashi(df)
 
-signals, st.session_state.last_high, st.session_state.last_low, st.session_state.last_direction = \
-    compute_signals(df, range_size, st.session_state.last_high, st.session_state.last_low, st.session_state.last_direction)
+            # initialize last_high/low
+            if st.session_state.last_high is None:
+                st.session_state.last_high = df["high"].iloc[0]
+            if st.session_state.last_low is None:
+                st.session_state.last_low = df["low"].iloc[0]
 
-# ===== PAPER TRADING LOGIC =====
-for sig in signals:
-    side, price = sig
-    position_size = st.session_state.equity * position_pct
-    if st.session_state.position is None:
-        st.session_state.position = side
-        st.session_state.position_price = price
-    elif st.session_state.position != side:
-        pnl = (price - st.session_state.position_price) if st.session_state.position=="LONG" else (st.session_state.position_price - price)
-        st.session_state.equity += pnl
-        st.session_state.position = side
-        st.session_state.position_price = price
+            # compute signals
+            signals, st.session_state.last_high, st.session_state.last_low, st.session_state.last_direction = \
+                compute_signals(df, range_size, st.session_state.last_high, st.session_state.last_low, st.session_state.last_direction)
 
-# ===== DISPLAY =====
-st.subheader(f"Equity: {st.session_state.equity:.2f} USDT | Current Position: {st.session_state.position if st.session_state.position else 'None'}")
-st.subheader("Last 10 Signals:")
-for sig in signals[-10:]:
-    st.write(f"{sig[0]} @ {sig[1]:.2f} USDT")
-st.line_chart(df[["close","high","low"]])
+            # PAPER TRADING LOGIC
+            for sig in signals:
+                side, price = sig
+                position_size = st.session_state.equity * position_pct
+                if st.session_state.position is None:
+                    st.session_state.position = side
+                    st.session_state.position_price = price
+                elif st.session_state.position != side:
+                    pnl = (price - st.session_state.position_price) if st.session_state.position=="LONG" else (st.session_state.position_price - price)
+                    st.session_state.equity += pnl
+                    st.session_state.position = side
+                    st.session_state.position_price = price
+
+            # DISPLAY
+            with placeholder.container():
+                st.subheader(f"Equity: {st.session_state.equity:.2f} USDT | Current Position: {st.session_state.position if st.session_state.position else 'None'}")
+                st.subheader("Last Signals:")
+                for sig in signals[-10:]:
+                    st.write(f"{sig[0]} @ {sig[1]:.2f} USDT")
+                st.line_chart(df[["close","high","low"]])
+
+# RUN ASYNC LOOP
+asyncio.run(main())
