@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 import asyncio
-from mexc import MEXC
+from typed_mexc import MEXC
 
 st.set_page_config(page_title="Range Bars HA Bot WS", layout="wide")
 st.title("Range Bars Bot - BTC/USDT 1m Heikin Ashi (Paper Trading)")
