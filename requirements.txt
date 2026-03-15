@@ -5,3 +5,4 @@ requests
 plotly
 streamlit-autorefresh
 websocket-client
+mexc
