@@ -1,195 +1,113 @@
-# streamlit_range_maker_stable_pro_v2.py
+# range_bars_ha_bot.py
 import streamlit as st
 import pandas as pd
 import requests
 import time
-import random
 
-# =======================
-# CONFIG
-# =======================
-RANGE_SIZE = 100
-LEVELS = 3
-LEVEL_SPACING = 1
-ORDER_SIZE = 0.001
-MAX_POSITION = 0.01
-MAKER_FEE = -0.00002
-TICK_INTERVAL = 2  # seconds
-SYMBOL = "BTCUSDT"
+st.set_page_config(page_title="Range Bars Heikin Ashi Bot", layout="wide")
+st.title("Range Bars Bot - BTC/USDT 1m Heikin Ashi (Paper Trading)")
 
-# =======================
-# SESSION STATE INIT
-# =======================
-state_vars = ["price","best_bid","best_ask","range_open","range_high","range_low",
-              "range_dir","target","position","orders","trades","equity","pnl",
-              "range_history","bot_running"]
-for var in state_vars:
-    if var not in st.session_state:
-        if var in ["orders","trades","range_history"]:
-            st.session_state[var] = []
-        elif var in ["position","equity","pnl"]:
-            st.session_state[var] = 0.0 if var!="equity" else 10000.0
+# ===== INPUTY =====
+range_size = st.number_input("Range Size ($)", min_value=1, value=100)
+refresh_sec = st.number_input("Refresh every (seconds)", min_value=1, value=5)
+initial_equity = 1000.0
+
+# ===== PAPER TRADING =====
+equity = initial_equity
+position = None
+position_price = 0.0
+
+# ===== FUNKCJA POBIERANIA DANYCH MEXC =====
+def get_btc_candles(limit=100):
+    url = f"https://www.mexc.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit={limit}"
+    resp = requests.get(url)
+    data = resp.json()
+    df = pd.DataFrame(data, columns=[
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "number_of_trades",
+        "taker_buy_base", "taker_buy_quote", "ignore"
+    ])
+    df = df.astype({
+        "open": float, "high": float, "low": float, "close": float
+    })
+    return df
+
+# ===== FUNKCJA HEIKIN ASHI =====
+def heikin_ashi(df):
+    ha = pd.DataFrame(index=df.index, columns=["open","high","low","close"])
+    ha["close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+    ha["open"] = 0.0
+    ha["high"] = 0.0
+    ha["low"] = 0.0
+    for i in range(len(df)):
+        if i == 0:
+            ha["open"].iloc[i] = (df["open"].iloc[i] + df["close"].iloc[i]) / 2
         else:
-            st.session_state[var] = None
-if st.session_state.target is None:
-    st.session_state.target = "LONG"
+            ha["open"].iloc[i] = (ha["open"].iloc[i-1] + ha["close"].iloc[i-1]) / 2
+        ha["high"].iloc[i] = max(df["high"].iloc[i], ha["open"].iloc[i], ha["close"].iloc[i])
+        ha["low"].iloc[i] = min(df["low"].iloc[i], ha["open"].iloc[i], ha["close"].iloc[i])
+    return ha
 
-# =======================
-# FETCH PRICE
-# =======================
-def get_price():
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
-    try:
-        r = requests.get(url, timeout=3)
-        data = r.json()
-        return float(data["price"])
-    except:
-        return None  # zwróć None jeśli błąd
+# ===== LOGIKA RANGE BARS =====
+def compute_signals(df, range_size, last_high, last_low, last_direction):
+    signals = []
+    for i in range(1, len(df)):
+        current_high = df["high"].iloc[i]
+        current_low = df["low"].iloc[i]
+        current_direction = last_direction
 
-# =======================
-# RANGE ENGINE
-# =======================
-def update_range(price):
-    if st.session_state.range_open is None:
-        st.session_state.range_open = price
-        st.session_state.range_high = price
-        st.session_state.range_low = price
-        return
+        if current_high >= last_high + range_size:
+            last_high += range_size
+            last_low = last_high - range_size
+            current_direction = 1  # LONG
+        elif current_low <= last_low - range_size:
+            last_low -= range_size
+            last_high = last_low + range_size
+            current_direction = -1  # SHORT
 
-    st.session_state.range_high = max(st.session_state.range_high, price)
-    st.session_state.range_low = min(st.session_state.range_low, price)
+        if current_direction != last_direction:
+            if current_direction == 1:
+                signals.append(("LONG", current_high))
+            elif current_direction == -1:
+                signals.append(("SHORT", current_low))
 
-    if st.session_state.range_high - st.session_state.range_low >= RANGE_SIZE:
-        new_dir = "UP" if price > st.session_state.range_open else "DOWN"
+        last_direction = current_direction
 
-        st.session_state.range_history.append({
-            "open": st.session_state.range_open,
-            "high": st.session_state.range_high,
-            "low": st.session_state.range_low,
-            "close": price,
-            "dir": new_dir
-        })
+    return signals, last_high, last_low, last_direction
 
-        # flip LONG/SHORT po zmianie kierunku
-        if st.session_state.range_dir and new_dir != st.session_state.range_dir:
-            st.session_state.target = "LONG" if new_dir == "UP" else "SHORT"
-
-        st.session_state.range_dir = new_dir
-        st.session_state.range_open = price
-        st.session_state.range_high = price
-        st.session_state.range_low = price
-
-# =======================
-# PLACE LIQUIDITY
-# =======================
-def cancel_all():
-    st.session_state.orders = []
-
-def place_liquidity():
-    bid = st.session_state.best_bid
-    ask = st.session_state.best_ask
-    if bid is None or ask is None:
-        return
-    cancel_all()
-
-    if st.session_state.target == "LONG":
-        for i in range(LEVELS):
-            price = bid - i * LEVEL_SPACING
-            st.session_state.orders.append({
-                "side": "BUY",
-                "price": price,
-                "size": ORDER_SIZE
-            })
-    elif st.session_state.target == "SHORT":
-        for i in range(LEVELS):
-            price = ask + i * LEVEL_SPACING
-            st.session_state.orders.append({
-                "side": "SELL",
-                "price": price,
-                "size": ORDER_SIZE
-            })
-
-# =======================
-# SIMULATE FILLS
-# =======================
-def simulate_fills(price):
-    filled = []
-    for order in st.session_state.orders:
-        if random.random() > 0.5:  # ~50% chance fill
-            if order["side"] == "BUY" and st.session_state.position < MAX_POSITION:
-                fee = order["price"] * order["size"] * MAKER_FEE
-                st.session_state.position += order["size"]
-                st.session_state.equity += fee
-                st.session_state.trades.append({
-                    "side": "BUY",
-                    "price": order["price"],
-                    "size": order["size"]
-                })
-                filled.append(order)
-            elif order["side"] == "SELL" and st.session_state.position > -MAX_POSITION:
-                fee = order["price"] * order["size"] * MAKER_FEE
-                st.session_state.position -= order["size"]
-                st.session_state.equity += fee
-                st.session_state.trades.append({
-                    "side": "SELL",
-                    "price": order["price"],
-                    "size": order["size"]
-                })
-                filled.append(order)
-    for f in filled:
-        st.session_state.orders.remove(f)
-
-# =======================
-# PNL UPDATE
-# =======================
-def update_pnl(price):
-    st.session_state.pnl = st.session_state.position * price
-
-# =======================
-# STREAMLIT UI
-# =======================
-st.title("BTC Range Maker Bot - Stable PRO v2")
-
-start_col, stop_col = st.columns(2)
-if start_col.button("Start bot"):
-    st.session_state.bot_running = True
-if stop_col.button("Stop bot"):
-    st.session_state.bot_running = False
-
+# ===== PĘTLA STREAMLIT =====
 placeholder = st.empty()
+last_high, last_low, last_direction = None, None, 0
 
-while st.session_state.bot_running:
-    price = get_price() or st.session_state.price  # fallback na ostatnią cenę
-    if price is None:
-        # jeśli nie mamy żadnej ceny jeszcze
-        time.sleep(TICK_INTERVAL)
-        continue
+while True:
+    df_raw = get_btc_candles(limit=100)
+    df = heikin_ashi(df_raw)
 
-    st.session_state.price = price
-    st.session_state.best_bid = price - 0.5
-    st.session_state.best_ask = price + 0.5
+    if last_high is None or last_low is None:
+        last_high = df["high"].iloc[0]
+        last_low = df["low"].iloc[0]
 
-    update_range(price)
-    place_liquidity()
-    simulate_fills(price)
-    update_pnl(price)
+    signals, last_high, last_low, last_direction = compute_signals(df, range_size, last_high, last_low, last_direction)
 
+    # ===== PAPER TRADING =====
+    for sig in signals:
+        side, price = sig
+        if position is None:
+            position = side
+            position_price = price
+        elif position != side:
+            # zamykamy poprzednią pozycję
+            pnl = (price - position_price) if position=="LONG" else (position_price - price)
+            equity += pnl
+            position = side
+            position_price = price
+
+    # ===== WYŚWIETLANIE =====
     with placeholder.container():
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("BTC Price", st.session_state.price)
-        col2.metric("Position BTC", round(st.session_state.position,6))
-        col3.metric("Equity", round(st.session_state.equity,2))
-        col4.metric("Unrealized PnL", round(st.session_state.pnl,2))
+        st.subheader(f"Equity: {equity:.2f} USDT | Current Position: {position if position else 'None'}")
+        st.subheader("Ostatnie 10 sygnałów:")
+        for sig in signals[-10:]:
+            st.write(f"{sig[0]} @ {sig[1]:.2f} USDT")
+        st.line_chart(df[["close","high","low"]])
 
-        st.subheader("Range Bars")
-        if st.session_state.range_history:
-            df = pd.DataFrame(st.session_state.range_history)
-            st.line_chart(df['close'])
-
-        st.subheader("Active Orders")
-        st.write(pd.DataFrame(st.session_state.orders))
-
-        st.subheader("Trades")
-        st.write(pd.DataFrame(st.session_state.trades))
-
-    time.sleep(TICK_INTERVAL)
+    time.sleep(refresh_sec)
